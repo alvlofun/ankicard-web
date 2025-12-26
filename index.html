@@ -5,9 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>暗記アプリ（試作）</title>
   <link rel="stylesheet" href="style.css" />
-  <div id="import">
-    <input type="file" id="csvInput" accept=".csv" />
-  </div>
   <style>
     html, body {
         height: 100%;
@@ -23,10 +20,29 @@
     #app {
         height: 100%;
     }
+    
+    /* インポートボタンを画面端に配置するためのスタイル */
+    #import {
+        position: fixed;
+        top: 10px;
+        right: 10px;
+        z-index: 1000;
+        background: rgba(255, 255, 255, 0.8);
+        padding: 5px;
+        border-radius: 4px;
+    }
   </style>
 </head>
 <body>
+
+  <!-- headからbodyへ移動しました -->
+  <div id="import">
+    <!-- acceptを.tsvに変更 -->
+    <input type="file" id="tsvInput" accept=".tsv, .txt" />
+  </div>
+
   <main id="app"></main>
+
   <script type="module" src="main.js"></script>
 </body>
 </html>

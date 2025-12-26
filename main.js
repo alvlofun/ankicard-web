@@ -1,7 +1,6 @@
-import { Card } from "./src/model/card.js"
 import { createCardView } from "./src/ui/cardView.js"
 import { saveReviewToDB } from "./src/storage/reviewDB.js"
-import { importCSV } from "./src/importer/csvImporter.js"
+import { importTSV } from "./src/importer/tsvImporter.js" // TSVに変更
 import { loadCards } from "./src/storage/cardDB.js"
 import { buildPathTree } from "./src/utils/pathTree.js"
 import { createPathBrowser } from "./src/ui/pathBrowser.js"
@@ -27,6 +26,7 @@ function renderCard(card, onNext) {
 
   const cardView = createCardView(card, {
     onSwipe(direction) {
+      // 左スワイプで正解、右で不正解とする（要件に応じて変更可）
       const outcome = direction === "left" ? "correct" : "incorrect"
 
       saveReview({
@@ -44,21 +44,30 @@ function renderCard(card, onNext) {
 }
 
 /* =====================
-   CSV読み込み
+   TSV読み込み
 ===================== */
-const csvInput = document.getElementById("csvInput")
+// ID変更に対応
+const tsvInput = document.getElementById("tsvInput")
 
-csvInput.addEventListener("change", async e => {
+tsvInput.addEventListener("change", async e => {
   const file = e.target.files[0]
   if (!file) return
 
   const path = prompt("この問題群のパスを入力してください（例: 英語/英単語/500-550）")
-  if (!path) return
+  if (!path) {
+    tsvInput.value = "" // キャンセル時は入力をリセット
+    return
+  }
 
-  const importedCards = await importCSV(file, path)
-  alert(`${importedCards.length} 問を読み込みました`)
-
-  await showPathSelection()
+  try {
+    const importedCards = await importTSV(file, path)
+    alert(`${importedCards.length} 問を読み込みました`)
+    tsvInput.value = "" // 読み込み完了後にリセット
+    await showPathSelection()
+  } catch (err) {
+    console.error(err)
+    alert("読み込みに失敗しました")
+  }
 })
 
 /* =====================
@@ -69,7 +78,9 @@ async function showPathSelection() {
   app.innerHTML = ""
 
   if (cards.length === 0) {
-    app.textContent = "問題がありません。CSVをインポートしてください。"
+    const msg = document.createElement("div")
+    msg.textContent = "問題がありません。右上のボタンからTSVをインポートしてください。"
+    app.appendChild(msg)
     return
   }
 
@@ -90,6 +101,8 @@ function startQuiz(cards) {
     alert("出題できる問題がありません")
     return
   }
+
+  // シャッフルしたい場合はここで cards をシャッフルする
 
   let index = 0
 

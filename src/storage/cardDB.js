@@ -1,31 +1,22 @@
-const DB_NAME = "ankiApp"
-const DB_VERSION = 2
+import { openDB } from "./db.js" // 共通DBモジュールを使用
+
 const STORE_NAME = "cards"
-
-function openDB() {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION)
-
-    request.onupgradeneeded = () => {
-      const db = request.result
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        db.createObjectStore(STORE_NAME, {
-          keyPath: "id"
-        })
-      }
-    }
-
-    request.onsuccess = () => resolve(request.result)
-    request.onerror = () => reject(request.error)
-  })
-}
 
 export async function saveCards(cards) {
   const db = await openDB()
   const tx = db.transaction(STORE_NAME, "readwrite")
   const store = tx.objectStore(STORE_NAME)
 
-  cards.forEach(card => store.put(card))
+  // Promise.allで全件保存を待機
+  const promises = cards.map(card => {
+    return new Promise((resolve, reject) => {
+      const req = store.put(card)
+      req.onsuccess = () => resolve()
+      req.onerror = () => reject(req.error)
+    })
+  })
+
+  await Promise.all(promises)
 }
 
 export async function loadCards() {
@@ -33,8 +24,9 @@ export async function loadCards() {
   const tx = db.transaction(STORE_NAME, "readonly")
   const store = tx.objectStore(STORE_NAME)
 
-  return new Promise(resolve => {
+  return new Promise((resolve, reject) => {
     const req = store.getAll()
     req.onsuccess = () => resolve(req.result)
+    req.onerror = () => reject(req.error)
   })
 }
