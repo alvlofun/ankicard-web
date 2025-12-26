@@ -28,6 +28,11 @@
       position: relative;
     }
 
+    /* 重要：非表示クラス（優先度を上げるために !important を付与） */
+    .hidden {
+      display: none !important;
+    }
+
     /* --- 戻るボタン --- */
     .back-button-container {
       position: absolute;
@@ -88,10 +93,6 @@
       line-height: 1.6;
       white-space: pre-wrap;
       word-wrap: break-word;
-    }
-
-    .hidden {
-      display: none;
     }
     
     /* デバッグ用ステータス表示 */
@@ -326,6 +327,14 @@
       background: #eee; color: #333; border: none;
       padding: 8px 16px; border-radius: 4px; cursor: pointer;
     }
+    .error-msg {
+      color: #d32f2f;
+      background: #ffebee;
+      padding: 10px;
+      border-radius: 4px;
+      margin: 10px 0;
+      font-size: 0.9rem;
+    }
 
   </style>
 </head>
@@ -348,12 +357,16 @@
   <div id="mcmcModal" class="modal-overlay hidden">
     <div class="modal-content">
       <div class="modal-title">パラメータ最適化 (MCMC)</div>
-      <div id="mcmcStatus">準備中...</div>
+      <div id="mcmcStatus">初期化中...</div>
       <div class="progress-bar"><div id="mcmcProgress" class="progress-fill"></div></div>
       <div id="mcmcResults"></div>
       <div class="modal-actions" id="mcmcActions" style="display:none;">
         <button class="btn-secondary" id="mcmcCancel">キャンセル</button>
         <button class="btn-primary" id="mcmcApply">適用する</button>
+      </div>
+      <!-- 閉じるボタン（エラー時用） -->
+      <div class="modal-actions" id="mcmcErrorActions" style="display:none;">
+        <button class="btn-secondary" id="mcmcErrorClose">閉じる</button>
       </div>
     </div>
   </div>
@@ -372,13 +385,17 @@
       CONSECUTIVE_SUCCESS_REQUIRED: 2
     };
 
-    // 設定のロード
+    // 設定のロードとサニタイズ
     let CONFIG = { ...DEFAULT_CONFIG };
     try {
       const savedConfig = localStorage.getItem("ankiAppConfig");
       if (savedConfig) {
         const parsed = JSON.parse(savedConfig);
-        CONFIG = { ...CONFIG, ...parsed }; // マージ
+        // 数値型への変換と簡単なバリデーション
+        if (parsed.ALPHA) parsed.ALPHA = Number(parsed.ALPHA) || 1;
+        if (parsed.BETA) parsed.BETA = Number(parsed.BETA) || 1;
+        if (parsed.RETENTION_SCALE_DAYS) parsed.RETENTION_SCALE_DAYS = Number(parsed.RETENTION_SCALE_DAYS) || 9;
+        CONFIG = { ...CONFIG, ...parsed }; 
       }
     } catch(e) { console.error("Config load failed", e); }
 
@@ -1112,71 +1129,88 @@
     const mcmcActions = document.getElementById("mcmcActions");
     const mcmcApply = document.getElementById("mcmcApply");
     const mcmcCancel = document.getElementById("mcmcCancel");
+    const mcmcErrorActions = document.getElementById("mcmcErrorActions");
+    const mcmcErrorClose = document.getElementById("mcmcErrorClose");
 
     let proposedConfig = null;
 
     mcmcBtn.addEventListener("click", async () => {
+      // 初期化
       mcmcModal.classList.remove("hidden");
       mcmcStatus.textContent = "学習データを集計中...";
       mcmcResults.innerHTML = "";
       mcmcActions.style.display = "none";
+      mcmcErrorActions.style.display = "none";
       mcmcProgress.style.width = "0%";
+      mcmcStatus.style.color = "inherit";
 
-      await new Promise(r => setTimeout(r, 0));
+      try {
+        await new Promise(r => setTimeout(r, 100)); // UI描画待ち
 
-      const engine = new MCMCEngine();
-      const count = await engine.prepare();
-      
-      const allReviews = await loadAllReviews();
-      if (allReviews.length < 10) {
-        mcmcStatus.textContent = "履歴データが少なすぎます";
-        return;
-      }
+        const engine = new MCMCEngine();
+        const count = await engine.prepare();
+        
+        const allReviews = await loadAllReviews();
+        if (allReviews.length < 10) {
+          mcmcStatus.textContent = "履歴データが少なすぎます（10件以上必要）";
+          mcmcErrorActions.style.display = "flex";
+          return;
+        }
 
-      mcmcStatus.textContent = "最適化実行中 (1000 iter)...";
-      
-      // MCMC実行
-      const result = await engine.run(1000, (i, total, currentL) => {
-        const pct = Math.round((i / total) * 100);
-        mcmcProgress.style.width = `${pct}%`;
-        mcmcStatus.textContent = `Iteration ${i}/${total} (LogLikelihood: ${currentL.toFixed(2)})`;
-      });
+        mcmcStatus.textContent = "最適化実行中 (1000 iter)...";
+        
+        // MCMC実行
+        const result = await engine.run(1000, (i, total, currentL) => {
+          const pct = Math.round((i / total) * 100);
+          mcmcProgress.style.width = `${pct}%`;
+          mcmcStatus.textContent = `Iteration ${i}/${total} (LogLikelihood: ${currentL.toFixed(2)})`;
+        });
 
-      // 結果表示
-      mcmcProgress.style.width = "100%";
-      mcmcStatus.textContent = "完了しました。";
-      
-      proposedConfig = result.bestParams;
-      
-      const diffL = result.bestL - result.initialL;
-      const lClass = diffL > 0 ? "improved" : "";
-      
-      function renderRow(label, key, fixed = 2) {
-        const oldV = CONFIG[key];
-        const newV = result.bestParams[key];
-        const changed = Math.abs(oldV - newV) > 0.01 ? "changed" : "";
-        return `
-          <div class="param-row">
-            <span class="param-name">${label}</span>
-            <span class="param-val ${changed}">${oldV.toFixed(fixed)} → ${newV.toFixed(fixed)}</span>
+        // 結果表示
+        mcmcProgress.style.width = "100%";
+        mcmcStatus.textContent = "完了しました。";
+        
+        proposedConfig = result.bestParams;
+        
+        const diffL = result.bestL - result.initialL;
+        const lClass = diffL > 0 ? "improved" : "";
+        
+        function renderRow(label, key, fixed = 2) {
+          const oldV = CONFIG[key];
+          const newV = result.bestParams[key];
+          const changed = Math.abs(oldV - newV) > 0.01 ? "changed" : "";
+          return `
+            <div class="param-row">
+              <span class="param-name">${label}</span>
+              <span class="param-val ${changed}">${oldV.toFixed(fixed)} → ${newV.toFixed(fixed)}</span>
+            </div>
+          `;
+        }
+
+        mcmcResults.innerHTML = `
+          <div style="margin-bottom:10px;">
+            対数尤度: <span class="${lClass}">${result.initialL.toFixed(2)} → ${result.bestL.toFixed(2)}</span>
+            (${diffL > 0 ? "+" : ""}${diffL.toFixed(2)})
           </div>
+          ${renderRow("Alpha (平滑化)", "ALPHA")}
+          ${renderRow("Beta (平滑化)", "BETA")}
+          ${renderRow("記憶減衰日数", "RETENTION_SCALE_DAYS", 1)}
         `;
+
+        mcmcActions.style.display = "flex";
+
+      } catch (err) {
+        console.error(err);
+        mcmcStatus.innerHTML = `<div class="error-msg">エラーが発生しました:<br>${err.message}</div>`;
+        mcmcErrorActions.style.display = "flex";
       }
-
-      mcmcResults.innerHTML = `
-        <div style="margin-bottom:10px;">
-          対数尤度: <span class="${lClass}">${result.initialL.toFixed(2)} → ${result.bestL.toFixed(2)}</span>
-          (${diffL > 0 ? "+" : ""}${diffL.toFixed(2)})
-        </div>
-        ${renderRow("Alpha (平滑化)", "ALPHA")}
-        ${renderRow("Beta (平滑化)", "BETA")}
-        ${renderRow("記憶減衰日数", "RETENTION_SCALE_DAYS", 1)}
-      `;
-
-      mcmcActions.style.display = "flex";
     });
 
     mcmcCancel.addEventListener("click", () => {
+      mcmcModal.classList.add("hidden");
+    });
+
+    mcmcErrorClose.addEventListener("click", () => {
       mcmcModal.classList.add("hidden");
     });
 
