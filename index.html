@@ -4,8 +4,89 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>暗記アプリ（試作）</title>
-  <link rel="stylesheet" href="style.css" />
+  
+  <!-- Excel読み込み用ライブラリ (SheetJS) -->
+  <!-- 動作に必須なため追加しました -->
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+
   <style>
+    /* --- style.css --- */
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #f5f5f5;
+      touch-action: none;
+    }
+
+    #app {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      width: 100vw;
+    }
+
+    /* カードのデザイン */
+    .card {
+      background: white;
+      width: 85%;
+      max-width: 400px;
+      height: auto;
+      min-height: 200px;
+      padding: 32px 24px;
+      border-radius: 20px;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+      cursor: pointer;
+      touch-action: none;
+      user-select: none;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      position: relative;
+    }
+
+    .question {
+      font-size: 1.4rem;
+      font-weight: bold;
+      margin-bottom: 24px;
+      text-align: center;
+      line-height: 1.4;
+    }
+
+    .answer {
+      font-size: 1.1rem;
+      color: #444;
+      border-top: 2px solid #f0f0f0;
+      padding-top: 20px;
+      text-align: center;
+      line-height: 1.5;
+    }
+
+    .hidden {
+      display: none;
+    }
+
+    /* フォルダ選択画面（パスブラウザ）のスタイル */
+    .path-browser {
+      width: 100%;
+      height: 100%;
+      overflow-y: auto;
+      padding: 20px;
+      box-sizing: border-box;
+    }
+
+    .folder-row {
+      background: white;
+      margin: 4px 0;
+      border-bottom: 1px solid #eee;
+      transition: background 0.2s;
+    }
+
+    .folder-row:active {
+      background: #f0f0f0;
+    }
+
+    /* --- index.html 内の style --- */
     html, body {
         height: 100%;
         margin: 0;
@@ -42,6 +123,403 @@
 
   <main id="app"></main>
 
-  <script type="module" src="main.js"></script>
+  <script>
+    /* =========================================
+       Modules Combined for Single File Execution
+       ========================================= */
+
+    /* --- card.js --- */
+    class Card {
+      constructor({ id, path, question, answer, note = "" }) {
+        this.id = id           // 内部ID
+        this.path = path       // フォルダパス
+        this.question = question
+        this.answer = answer
+        this.note = note       // 備考（Excelの3列目）
+      }
+    }
+
+    /* --- db.js --- */
+    const DB_NAME = "ankiApp"
+    const DB_VERSION = 2 // バージョンを統一
+
+    function openDB() {
+      return new Promise((resolve, reject) => {
+        const request = indexedDB.open(DB_NAME, DB_VERSION)
+
+        request.onupgradeneeded = (e) => {
+          const db = e.target.result
+          
+          // カード用ストアの作成
+          if (!db.objectStoreNames.contains("cards")) {
+            db.createObjectStore("cards", { keyPath: "id" })
+          }
+
+          // 学習履歴用ストアの作成
+          if (!db.objectStoreNames.contains("reviews")) {
+            db.createObjectStore("reviews", { 
+              keyPath: "id",
+              autoIncrement: true 
+            })
+          }
+        }
+
+        request.onsuccess = () => resolve(request.result)
+        request.onerror = () => reject(request.error)
+      })
+    }
+
+    /* --- cardDB.js --- */
+    const CARD_STORE_NAME = "cards"
+
+    async function saveCards(cards) {
+      const db = await openDB()
+      const tx = db.transaction(CARD_STORE_NAME, "readwrite")
+      const store = tx.objectStore(CARD_STORE_NAME)
+
+      // Promise.allで全件保存を待機
+      const promises = cards.map(card => {
+        return new Promise((resolve, reject) => {
+          const req = store.put(card)
+          req.onsuccess = () => resolve()
+          req.onerror = () => reject(req.error)
+        })
+      })
+
+      await Promise.all(promises)
+    }
+
+    async function loadCards() {
+      const db = await openDB()
+      const tx = db.transaction(CARD_STORE_NAME, "readonly")
+      const store = tx.objectStore(CARD_STORE_NAME)
+
+      return new Promise((resolve, reject) => {
+        const req = store.getAll()
+        req.onsuccess = () => resolve(req.result)
+        req.onerror = () => reject(req.error)
+      })
+    }
+
+    /* --- reviewDB.js --- */
+    const REVIEW_STORE_NAME = "reviews"
+
+    async function saveReviewToDB(review) {
+      const db = await openDB()
+      const tx = db.transaction(REVIEW_STORE_NAME, "readwrite")
+      const store = tx.objectStore(REVIEW_STORE_NAME)
+
+      return new Promise((resolve, reject) => {
+        const req = store.add(review)
+        req.onsuccess = () => resolve(req.result)
+        req.onerror = () => reject(req.error)
+      })
+    }
+
+    /* --- pathTree.js --- */
+    function buildPathTree(cards) {
+      const root = {}
+
+      for (const card of cards) {
+        // パス区切り文字 "/" で分割
+        const parts = card.path.split("/")
+        let node = root
+
+        for (const part of parts) {
+          if (!node[part]) {
+            node[part] = {}
+          }
+          node = node[part]
+        }
+
+        if (!node.__cards__) {
+          node.__cards__ = []
+        }
+        node.__cards__.push(card)
+      }
+
+      return root
+    }
+
+    function collectCards(node) {
+      let result = []
+
+      if (node.__cards__) {
+        result = result.concat(node.__cards__)
+      }
+
+      for (const key of Object.keys(node)) {
+        if (key !== "__cards__") {
+          result = result.concat(collectCards(node[key]))
+        }
+      }
+
+      return result
+    }
+
+    /* --- xlsxImporter.js --- */
+    // Note: Replaced importTSV logic with XLSX logic as per file content provided
+    async function importXLSX(file, path) {
+      // ArrayBufferとしてファイルを読み込む
+      const data = await file.arrayBuffer()
+      
+      // SheetJS (Global変数のXLSX) を使ってワークブックを読み込む
+      const workbook = XLSX.read(data)
+      
+      // 最初のシートを取得
+      const firstSheetName = workbook.SheetNames[0]
+      const worksheet = workbook.Sheets[firstSheetName]
+      
+      // シートを2次元配列に変換 (header: 1 は配列の配列として取得する設定)
+      // 例: [ ["問題", "答え", "備考"], ["apple", "りんご", ""], ... ]
+      const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1 })
+
+      // 1行目はヘッダーとみなして除外（データが空の場合は考慮）
+      const dataRows = rows.length > 1 ? rows.slice(1) : []
+
+      const cards = dataRows
+        .filter(row => row.length > 0 && row[0]) // 空行や問題文がない行を除外
+        .map((row, index) => {
+          // Excelのセルデータは文字列とは限らないため、String()で変換
+          const question = row[0] ? String(row[0]) : ""
+          const answer = row[1] ? String(row[1]) : ""
+          const note = row[2] ? String(row[2]) : ""
+
+          return new Card({
+            id: `${path}-${index}-${crypto.randomUUID()}`,
+            path,
+            question,
+            answer,
+            note
+          })
+        })
+
+      await saveCards(cards)
+      return cards
+    }
+
+    /* --- cardView.js --- */
+    function createCardView(card, { onSwipe } = {}) {
+      const cardEl = document.createElement("div")
+      cardEl.className = "card"
+
+      const questionEl = document.createElement("div")
+      questionEl.className = "question"
+      questionEl.textContent = card.question
+
+      const answerEl = document.createElement("div")
+      answerEl.className = "answer hidden"
+      answerEl.textContent = card.answer
+      
+      // 備考があれば追加表示
+      if (card.note) {
+        const noteEl = document.createElement("div")
+        noteEl.style.fontSize = "0.8rem"
+        noteEl.style.color = "#888"
+        noteEl.style.marginTop = "10px"
+        noteEl.textContent = card.note
+        answerEl.appendChild(noteEl)
+      }
+
+      cardEl.append(questionEl, answerEl)
+
+      // タップで解答表示
+      cardEl.addEventListener("click", () => {
+        answerEl.classList.toggle("hidden")
+      })
+
+      // スワイプ検出ロジック
+      let startX = null
+
+      cardEl.addEventListener("pointerdown", (e) => {
+        startX = e.clientX
+        cardEl.setPointerCapture(e.pointerId)
+      })
+
+      cardEl.addEventListener("pointerup", (e) => {
+        if (startX === null) return
+
+        const deltaX = e.clientX - startX
+        const threshold = 80 // スワイプと判定する距離
+
+        if (deltaX > threshold) {
+          onSwipe?.("right")
+        } else if (deltaX < -threshold) {
+          onSwipe?.("left")
+        }
+
+        startX = null
+      })
+
+      return cardEl
+    }
+
+    /* --- pathBrowser.js --- */
+    function createPathBrowser(tree, onSelect) {
+      const container = document.createElement("div")
+      container.className = "path-browser"
+
+      function renderNode(node, depth = 0) {
+        const wrapper = document.createElement("div")
+
+        for (const key of Object.keys(node)) {
+          if (key === "__cards__") continue
+
+          const row = document.createElement("div")
+          row.className = "folder-row"
+          row.textContent = key
+          // インデント
+          row.style.paddingLeft = `${(depth * 20) + 10}px`
+          row.style.paddingTop = "12px"
+          row.style.paddingBottom = "12px"
+          row.style.cursor = "pointer"
+          row.style.userSelect = "none"
+          
+          // 子要素のカード数をカウントして表示（任意）
+          const childCards = collectCards(node[key])
+          const countSpan = document.createElement("span")
+          countSpan.style.float = "right"
+          countSpan.style.marginRight = "10px"
+          countSpan.style.color = "#999"
+          countSpan.style.fontSize = "0.9em"
+          countSpan.textContent = `${childCards.length}問`
+          row.appendChild(countSpan)
+
+          row.addEventListener("click", () => {
+            if (childCards.length === 0) return
+            onSelect(childCards)
+          })
+
+          wrapper.appendChild(row)
+          wrapper.appendChild(renderNode(node[key], depth + 1))
+        }
+
+        return wrapper
+      }
+
+      const list = renderNode(tree)
+      container.appendChild(list)
+      
+      return container
+    }
+
+    /* --- main.js --- */
+    document.addEventListener("touchmove", e => {
+      e.preventDefault()
+    }, { passive: false })
+
+    const app = document.getElementById("app")
+
+    /* =====================
+       永続化
+    ===================== */
+    async function saveReview(result) {
+      await saveReviewToDB(result)
+    }
+
+    /* =====================
+       描画 
+    ===================== */
+    function renderCard(card, onNext) {
+      app.innerHTML = ""
+
+      const cardView = createCardView(card, {
+        onSwipe(direction) {
+          // 左スワイプで正解、右で不正解とする（要件に応じて変更可）
+          const outcome = direction === "left" ? "correct" : "incorrect"
+
+          saveReview({
+            cardId: card.id,
+            cardPath: card.path,
+            outcome,
+            reviewedAt: new Date().toISOString()
+          })
+
+          onNext()
+        }
+      })
+
+      app.appendChild(cardView)
+    }
+
+    /* =====================
+       TSV/XLSX読み込み
+    ===================== */
+    // ID変更に対応
+    const tsvInput = document.getElementById("tsvInput")
+
+    tsvInput.addEventListener("change", async e => {
+      const file = e.target.files[0]
+      if (!file) return
+
+      const path = prompt("この問題群のパスを入力してください（例: 英語/英単語/500-550）")
+      if (!path) {
+        tsvInput.value = "" // キャンセル時は入力をリセット
+        return
+      }
+
+      try {
+        // NOTE: User's code said importTSV, but provided xlsxImporter.js.
+        // Changed to importXLSX to match the definition.
+        const importedCards = await importXLSX(file, path)
+        alert(`${importedCards.length} 問を読み込みました`)
+        tsvInput.value = "" // 読み込み完了後にリセット
+        await showPathSelection()
+      } catch (err) {
+        console.error(err)
+        alert("読み込みに失敗しました")
+      }
+    })
+
+    /* =====================
+       起動時処理
+    ===================== */
+    async function showPathSelection() {
+      const cards = await loadCards()
+      app.innerHTML = ""
+
+      if (cards.length === 0) {
+        const msg = document.createElement("div")
+        msg.textContent = "問題がありません。右上のボタンからExcelファイルをインポートしてください。"
+        app.appendChild(msg)
+        return
+      }
+
+      const tree = buildPathTree(cards)
+
+      const browser = createPathBrowser(tree, (selectedCards) => {
+        startQuiz(selectedCards)
+      })
+
+      app.appendChild(browser)
+    }
+
+    /* =====================
+       出題開始処理
+    ===================== */
+    function startQuiz(cards) {
+      if (!cards || cards.length === 0) {
+        alert("出題できる問題がありません")
+        return
+      }
+
+      // シャッフルしたい場合はここで cards をシャッフルする
+
+      let index = 0
+
+      function show() {
+        const card = cards[index]
+        renderCard(card, () => {
+          index = (index + 1) % cards.length
+          show()
+        })
+      }
+
+      show()
+    }
+
+    showPathSelection()
+
+  </script>
 </body>
 </html>
