@@ -1,9 +1,10 @@
 import { Card } from "./src/model/card.js"
 import { createCardView } from "./src/ui/cardView.js"
-import { SequentialScheduler } from "./src/scheduler/sequentialScheduler.js"
 import { saveReviewToDB } from "./src/storage/reviewDB.js"
 import { importCSV } from "./src/importer/csvImporter.js"
 import { loadCards } from "./src/storage/cardDB.js"
+import { buildPathTree } from "./src/utils/pathTree.js"
+import { createPathBrowser } from "./src/ui/pathBrowser.js"
 
 document.addEventListener("touchmove", e => {
   e.preventDefault()
@@ -12,34 +13,22 @@ document.addEventListener("touchmove", e => {
 const app = document.getElementById("app")
 
 /* =====================
-   カード定義（最初に）
+   出題開始処理
 ===================== */
-const cards = [
-  new Card({
-    id: "c1",
-    path: "英語/基礎/用語",
-    question: "GitHub Pagesとは何ですか？",
-    answer: "GitHubが提供する静的サイトのホスティングサービスです。"
-  }),
-  new Card({
-    id: "c2",
-    path: "英語/Web/略語",
-    question: "PWAとは何の略ですか？",
-    answer: "Progressive Web App の略です。"
-  }),
-  new Card({
-    id: "c3",
-    path: "英語/Web/DB",
-    question: "IndexedDBは何のために使いますか？",
-    answer: "ブラウザ内に構造化データを保存するためです。"
-  })
-]
+function startQuiz(cards) {
+  let index = 0
+  schedulerState = { currentIndex: 0 }
 
-/* =====================
-   Scheduler
-===================== */
-const scheduler = new SequentialScheduler()
-let schedulerState = { currentIndex: 0 }
+  function show() {
+    const card = cards[index]
+    renderCard(card, () => {
+      index = (index + 1) % cards.length
+      show()
+    })
+  }
+
+  show()
+}
 
 /* =====================
    永続化
@@ -51,14 +40,12 @@ async function saveReview(result) {
 /* =====================
    描画
 ===================== */
-function renderCard(card) {
+function renderCard(card, onNext) {
   app.innerHTML = ""
 
   const cardView = createCardView(card, {
     onSwipe(direction) {
-      const outcome = direction === "left"
-        ? "correct"
-        : "incorrect"
+      const outcome = direction === "left" ? "correct" : "incorrect"
 
       saveReview({
         cardId: card.id,
@@ -67,10 +54,7 @@ function renderCard(card) {
         reviewedAt: new Date().toISOString()
       })
 
-      const result = scheduler.next(cards, schedulerState)
-      schedulerState = result.nextState
-
-      renderCard(result.card)
+      onNext()
     }
   })
 
@@ -78,14 +62,8 @@ function renderCard(card) {
 }
 
 /* =====================
-   初期表示
-===================== */
-renderCard(cards[schedulerState.currentIndex])
-
-/* =====================
    CSV読み込み
 ===================== */
-
 const csvInput = document.getElementById("csvInput")
 
 csvInput.addEventListener("change", async e => {
@@ -97,4 +75,32 @@ csvInput.addEventListener("change", async e => {
 
   const importedCards = await importCSV(file, path)
   alert(`${importedCards.length} 問を読み込みました`)
+
+  await showPathSelection()
 })
+
+/* =====================
+   起動時処理
+===================== */
+async function showPathSelection() {
+  const cards = await loadCards()
+  app.innerHTML = ""
+
+  if (cards.length === 0) {
+    app.textContent = "問題がありません。CSVをインポートしてください。"
+    return
+  }
+
+  const tree = buildPathTree(cards)
+
+  const browser = createPathBrowser(tree, (selectedCards) => {
+    startQuiz(selectedCards)
+  })
+
+  app.appendChild(browser)
+}
+
+/* =====================
+   
+===================== */
+showPathSelection()
