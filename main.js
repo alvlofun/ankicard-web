@@ -12,12 +12,20 @@ document.addEventListener("touchmove", e => {
 
 const app = document.getElementById("app")
 
+const browser = createPathBrowser(tree, (selectedCards) => {
+  startQuiz(selectedCards)
+})
+
 /* =====================
    出題開始処理
 ===================== */
 function startQuiz(cards) {
+  if (!cards || cards.length === 0) {
+    alert("出題できる問題がありません")
+    return
+  }
+
   let index = 0
-  schedulerState = { currentIndex: 0 }
 
   function show() {
     const card = cards[index]
