@@ -12,32 +12,6 @@ document.addEventListener("touchmove", e => {
 
 const app = document.getElementById("app")
 
-const browser = createPathBrowser(tree, (selectedCards) => {
-  startQuiz(selectedCards)
-})
-
-/* =====================
-   出題開始処理
-===================== */
-function startQuiz(cards) {
-  if (!cards || cards.length === 0) {
-    alert("出題できる問題がありません")
-    return
-  }
-
-  let index = 0
-
-  function show() {
-    const card = cards[index]
-    renderCard(card, () => {
-      index = (index + 1) % cards.length
-      show()
-    })
-  }
-
-  show()
-}
-
 /* =====================
    永続化
 ===================== */
@@ -108,7 +82,30 @@ async function showPathSelection() {
   app.appendChild(browser)
 }
 
+const browser = createPathBrowser(tree, (selectedCards) => {
+  startQuiz(selectedCards)
+})
+
 /* =====================
-   
+   出題開始処理
 ===================== */
+function startQuiz(cards) {
+  if (!cards || cards.length === 0) {
+    alert("出題できる問題がありません")
+    return
+  }
+
+  let index = 0
+
+  function show() {
+    const card = cards[index]
+    renderCard(card, () => {
+      index = (index + 1) % cards.length
+      show()
+    })
+  }
+
+  show()
+}
+
 showPathSelection()
