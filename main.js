@@ -20,7 +20,7 @@ async function saveReview(result) {
 }
 
 /* =====================
-   描画
+   描画 
 ===================== */
 function renderCard(card, onNext) {
   app.innerHTML = ""
