@@ -1,6 +1,6 @@
 import { createCardView } from "./src/ui/cardView.js"
 import { saveReviewToDB } from "./src/storage/reviewDB.js"
-import { importTSV } from "./src/importer/tsvImporter.js" // TSVに変更
+import { importTSV } from "./src/importer/xlsxImporter.js"
 import { loadCards } from "./src/storage/cardDB.js"
 import { buildPathTree } from "./src/utils/pathTree.js"
 import { createPathBrowser } from "./src/ui/pathBrowser.js"
