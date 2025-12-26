@@ -2,6 +2,8 @@ import { Card } from "./src/model/card.js"
 import { createCardView } from "./src/ui/cardView.js"
 import { SequentialScheduler } from "./src/scheduler/sequentialScheduler.js"
 import { saveReviewToDB } from "./src/storage/reviewDB.js"
+import { importCSV } from "./src/importer/csvImporter.js"
+import { loadCards } from "./src/storage/cardDB.js"
 
 document.addEventListener("touchmove", e => {
   e.preventDefault()
@@ -79,3 +81,20 @@ function renderCard(card) {
    初期表示
 ===================== */
 renderCard(cards[schedulerState.currentIndex])
+
+/* =====================
+   CSV読み込み
+===================== */
+
+const csvInput = document.getElementById("csvInput")
+
+csvInput.addEventListener("change", async e => {
+  const file = e.target.files[0]
+  if (!file) return
+
+  const path = prompt("この問題群のパスを入力してください（例: 英語/英単語/500-550）")
+  if (!path) return
+
+  const importedCards = await importCSV(file, path)
+  alert(`${importedCards.length} 問を読み込みました`)
+})
