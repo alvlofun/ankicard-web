@@ -1,6 +1,11 @@
 import { Card } from "./src/model/card.js"
 import { createCardView } from "./src/ui/cardView.js"
 import { SequentialScheduler } from "./src/scheduler/sequentialScheduler.js"
+import { saveReviewToDB } from "./src/storage/reviewDB.js"
+
+document.addEventListener("touchmove", e => {
+  e.preventDefault()
+}, { passive: false })
 
 const app = document.getElementById("app")
 
@@ -37,11 +42,8 @@ let schedulerState = { currentIndex: 0 }
 /* =====================
    永続化
 ===================== */
-function saveReview(result) {
-  const key = "reviewResults"
-  const existing = JSON.parse(localStorage.getItem(key) || "[]")
-  existing.push(result)
-  localStorage.setItem(key, JSON.stringify(existing))
+async function saveReview(result) {
+  await saveReviewToDB(result)
 }
 
 /* =====================

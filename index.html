@@ -5,6 +5,22 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>暗記アプリ（試作）</title>
   <link rel="stylesheet" href="style.css" />
+  <style>
+    html, body {
+        height: 100%;
+        margin: 0;
+        overscroll-behavior: none;
+        touch-action: none; /* ← 超重要 */
+    }
+
+    body {
+        overflow: hidden;
+    }
+
+    #app {
+        height: 100%;
+    }
+  </style>
 </head>
 <body>
   <main id="app"></main>
