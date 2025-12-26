@@ -238,7 +238,7 @@
         overflow: hidden;
     }
 
-    /* ツールバー（インポート＆MCMC） */
+    /* ツールバー */
     #toolbar {
         position: fixed;
         top: 10px;
@@ -246,10 +246,12 @@
         z-index: 1000;
         display: none; /* JSで制御 */
         gap: 10px;
+        flex-wrap: wrap;
+        justify-content: flex-end;
     }
 
     .tool-btn {
-        background: rgba(255, 255, 255, 0.9);
+        background: rgba(255, 255, 255, 0.95);
         padding: 6px 10px;
         border-radius: 6px;
         box-shadow: 0 2px 8px rgba(0,0,0,0.15);
@@ -259,9 +261,10 @@
         display: flex;
         align-items: center;
         justify-content: center;
+        white-space: nowrap;
     }
 
-    /* モーダル */
+    /* モーダル共通 */
     .modal-overlay {
       position: fixed;
       top: 0; left: 0; width: 100%; height: 100%;
@@ -277,7 +280,7 @@
       border-radius: 12px;
       width: 90%;
       max-width: 500px;
-      max-height: 80vh;
+      max-height: 85vh;
       overflow-y: auto;
       box-shadow: 0 4px 20px rgba(0,0,0,0.2);
     }
@@ -300,6 +303,8 @@
       width: 0%;
       transition: width 0.1s;
     }
+    
+    /* MCMC用スタイル */
     .param-row {
       display: flex;
       justify-content: space-between;
@@ -312,6 +317,30 @@
     .param-val { font-family: monospace; }
     .changed { color: #d32f2f; font-weight: bold; }
     .improved { color: #2e7d32; font-weight: bold; }
+
+    /* 手動設定モーダル用スタイル */
+    .config-label {
+      display: block;
+      margin-bottom: 15px;
+      font-weight: bold;
+      font-size: 0.95rem;
+    }
+    .config-label input {
+      display: block;
+      width: 100%;
+      padding: 8px;
+      margin-top: 5px;
+      box-sizing: border-box;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 1rem;
+    }
+    .config-desc {
+      font-weight: normal;
+      font-size: 0.8rem;
+      color: #666;
+      margin-top: 3px;
+    }
 
     .modal-actions {
       display: flex;
@@ -342,8 +371,11 @@
 
   <!-- ツールバー -->
   <div id="toolbar">
+    <div class="tool-btn" id="configBtn">
+      🔧 設定
+    </div>
     <div class="tool-btn" id="mcmcBtn">
-      ⚙️ MCMC最適化
+      ⚙️ MCMC
     </div>
     <div class="tool-btn">
       <span style="font-weight:bold; margin-right:5px;">Excel:</span>
@@ -352,6 +384,46 @@
   </div>
 
   <main id="app"></main>
+
+  <!-- 手動設定モーダル -->
+  <div id="configModal" class="modal-overlay hidden">
+    <div class="modal-content">
+      <div class="modal-title">出題設定</div>
+      <div style="margin-bottom:15px; font-size:0.9rem; color:#666; line-height:1.4;">
+        学習の進行に関する閾値を調整できます。<br>
+        変更は次回の出題判定から即座に反映されます。
+      </div>
+      
+      <label class="config-label">
+        学習中の同時進行数 (Learning Threshold)
+        <input type="number" id="cfgLearningThreshold" min="1" max="100">
+        <div class="config-desc">一度に「学習中」状態にするカードの上限数です。この数を超えると新規カードは出題されにくくなります。</div>
+      </label>
+  
+      <label class="config-label">
+        習得済み判定確率 (Master Prob)
+        <input type="number" id="cfgMasterProb" step="0.05" min="0.1" max="0.99">
+        <div class="config-desc">推定記憶率がこの値(0.0~1.0)を超えると「習得済み」判定の候補になります。</div>
+      </label>
+  
+      <label class="config-label">
+        習得判定の必要連続正解数
+        <input type="number" id="cfgConsecutive" min="1" max="10">
+        <div class="config-desc">上記確率を超えた状態で、さらにこの回数連続して正解すると「習得済み(Mastered)」に昇格します。</div>
+      </label>
+  
+      <label class="config-label">
+        復習(降格)判定確率 (Learning Prob)
+        <input type="number" id="cfgLearningProb" step="0.05" min="0.1" max="0.99">
+        <div class="config-desc">習得済みカードの推定記憶率がこの値を下回ると、再び「学習中」に戻ります。</div>
+      </label>
+  
+      <div class="modal-actions">
+        <button class="btn-secondary" id="configCancel">キャンセル</button>
+        <button class="btn-primary" id="configSave">保存</button>
+      </div>
+    </div>
+  </div>
 
   <!-- MCMC モーダル -->
   <div id="mcmcModal" class="modal-overlay hidden">
@@ -395,6 +467,12 @@
         if (parsed.ALPHA) parsed.ALPHA = Number(parsed.ALPHA) || 1;
         if (parsed.BETA) parsed.BETA = Number(parsed.BETA) || 1;
         if (parsed.RETENTION_SCALE_DAYS) parsed.RETENTION_SCALE_DAYS = Number(parsed.RETENTION_SCALE_DAYS) || 9;
+        // 追加パラメータの読み込み
+        if (parsed.LEARNING_THRESHOLD) parsed.LEARNING_THRESHOLD = Number(parsed.LEARNING_THRESHOLD) || 5;
+        if (parsed.MASTER_PROB_THRESHOLD) parsed.MASTER_PROB_THRESHOLD = Number(parsed.MASTER_PROB_THRESHOLD) || 0.9;
+        if (parsed.LEARNING_PROB_THRESHOLD) parsed.LEARNING_PROB_THRESHOLD = Number(parsed.LEARNING_PROB_THRESHOLD) || 0.8;
+        if (parsed.CONSECUTIVE_SUCCESS_REQUIRED) parsed.CONSECUTIVE_SUCCESS_REQUIRED = Number(parsed.CONSECUTIVE_SUCCESS_REQUIRED) || 2;
+        
         CONFIG = { ...CONFIG, ...parsed }; 
       }
     } catch(e) { console.error("Config load failed", e); }
@@ -1119,6 +1197,48 @@
 
       nextLoop();
     }
+
+    /* --- Config UI Handler --- */
+    const configBtn = document.getElementById("configBtn");
+    const configModal = document.getElementById("configModal");
+    const configSave = document.getElementById("configSave");
+    const configCancel = document.getElementById("configCancel");
+    
+    const cfgLearningThreshold = document.getElementById("cfgLearningThreshold");
+    const cfgMasterProb = document.getElementById("cfgMasterProb");
+    const cfgConsecutive = document.getElementById("cfgConsecutive");
+    const cfgLearningProb = document.getElementById("cfgLearningProb");
+
+    configBtn.addEventListener("click", () => {
+      // 現在の値をフォームにセット
+      cfgLearningThreshold.value = CONFIG.LEARNING_THRESHOLD;
+      cfgMasterProb.value = CONFIG.MASTER_PROB_THRESHOLD;
+      cfgConsecutive.value = CONFIG.CONSECUTIVE_SUCCESS_REQUIRED;
+      cfgLearningProb.value = CONFIG.LEARNING_PROB_THRESHOLD;
+      
+      configModal.classList.remove("hidden");
+    });
+
+    configCancel.addEventListener("click", () => {
+      configModal.classList.add("hidden");
+    });
+
+    configSave.addEventListener("click", () => {
+      // 値の読み取りとバリデーション
+      const lt = parseInt(cfgLearningThreshold.value, 10);
+      const mp = parseFloat(cfgMasterProb.value);
+      const cs = parseInt(cfgConsecutive.value, 10);
+      const lp = parseFloat(cfgLearningProb.value);
+
+      if (lt > 0) CONFIG.LEARNING_THRESHOLD = lt;
+      if (mp > 0 && mp < 1) CONFIG.MASTER_PROB_THRESHOLD = mp;
+      if (cs > 0) CONFIG.CONSECUTIVE_SUCCESS_REQUIRED = cs;
+      if (lp > 0 && lp < 1) CONFIG.LEARNING_PROB_THRESHOLD = lp;
+
+      saveConfig();
+      alert("設定を保存しました。");
+      configModal.classList.add("hidden");
+    });
 
     /* --- MCMC UI Handler --- */
     const mcmcBtn = document.getElementById("mcmcBtn");
