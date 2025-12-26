@@ -17,16 +17,6 @@
       touch-action: none;
     }
 
-    .icon-btn {
-      background: none;
-      border: none;
-      font-size: 1.5rem;
-      cursor: pointer;
-      padding: 0 10px;
-      color: #555;
-      user-select: none;
-    }
-
     #app {
       display: flex;
       justify-content: center;
@@ -103,13 +93,22 @@
     .hidden {
       display: none;
     }
+    
+    /* デバッグ用ステータス表示 */
+    .card-stats-debug {
+      font-size: 0.75rem;
+      color: #aaa;
+      margin-bottom: 10px;
+      text-align: right;
+      font-family: monospace;
+    }
 
     /* --- フォルダ選択画面（パスブラウザ） --- */
     .path-browser {
       width: 100%;
       height: 100%;
       overflow-y: auto;
-      padding: 60px 20px 20px 20px; /* インポートバーとの重なりを避けるため少し下げ */
+      padding: 60px 20px 20px 20px;
       box-sizing: border-box;
       padding-bottom: 80px;
     }
@@ -249,7 +248,7 @@
         border-radius: 6px;
         box-shadow: 0 2px 8px rgba(0,0,0,0.15);
         font-size: 0.8rem;
-        display: none; /* デフォルトは非表示、JSで制御 */
+        display: none;
     }
   </style>
 </head>
@@ -264,375 +263,732 @@
   <main id="app"></main>
 
   <script>
-    /* --- データモデル --- */
+    /* --- 1. 定数・パラメータ --- */
+    const CONFIG = {
+      // 記憶減衰パラメータ (秒)
+      RETENTION_SCALE_DAYS: 9,
+      
+      // 平滑化パラメータ
+      ALPHA: 1,
+      BETA: 1,
+      EPSILON: 0.01,
+
+      // 出題制御パラメータ
+      EXPLORATION_RATE: 0.1,
+      LEARNING_THRESHOLD: 5, // テスト用に少なめに設定
+      
+      // 状態遷移パラメータ
+      MASTER_PROB_THRESHOLD: 0.9,
+      LEARNING_PROB_THRESHOLD: 0.8,
+      CONSECUTIVE_SUCCESS_REQUIRED: 2 // Master昇格に必要な連続高評価回数
+    };
+
+    /* --- 2. データ構造 --- */
     class Card {
       constructor({ id, path, question, answer, note = "" }) {
-        this.id = id           
-        this.path = path       
-        this.question = question
-        this.answer = answer
-        this.note = note       
+        this.id = id;
+        this.path = path;
+        this.question = question;
+        this.answer = answer;
+        this.note = note;
       }
     }
 
-    /* --- データベース設定 --- */
-    const DB_NAME = "ankiApp"
-    const DB_VERSION = 2
+    // メモリ上の状態管理用オブジェクト
+    class CardStats {
+      constructor(cardId) {
+        this.cardId = cardId;
+        this.state = "new"; // "new" | "learning" | "mastered"
+        this.lastReviewedAt = null; // timestamp (ms)
+        this.estimatedP = 0.5; // 初期値
+        this.consecutiveHighP = 0; // learning -> mastered 判定用
+        this.history = []; // 直近の履歴（重み計算用）
+      }
+    }
+
+    /* --- 3. データベース設定 --- */
+    const DB_NAME = "ankiApp";
+    const DB_VERSION = 3; // バージョンアップ
 
     function openDB() {
       return new Promise((resolve, reject) => {
-        const request = indexedDB.open(DB_NAME, DB_VERSION)
+        const request = indexedDB.open(DB_NAME, DB_VERSION);
+        
         request.onupgradeneeded = (e) => {
-          const db = e.target.result
+          const db = e.target.result;
+          const tx = e.target.transaction;
+
           if (!db.objectStoreNames.contains("cards")) {
-            db.createObjectStore("cards", { keyPath: "id" })
+            db.createObjectStore("cards", { keyPath: "id" });
           }
+          
           if (!db.objectStoreNames.contains("reviews")) {
-            db.createObjectStore("reviews", { keyPath: "id", autoIncrement: true })
+            const reviewStore = db.createObjectStore("reviews", { keyPath: "id", autoIncrement: true });
+            // cardId で検索できるようにインデックス追加
+            reviewStore.createIndex("cardId", "cardId", { unique: false });
+          } else {
+            // 既存ストアがある場合、インデックスの存在確認・追加
+            const reviewStore = tx.objectStore("reviews");
+            if (!reviewStore.indexNames.contains("cardId")) {
+              reviewStore.createIndex("cardId", "cardId", { unique: false });
+            }
           }
-        }
-        request.onsuccess = () => resolve(request.result)
-        request.onerror = () => reject(request.error)
-      })
+
+          if (!db.objectStoreNames.contains("cardStats")) {
+            db.createObjectStore("cardStats", { keyPath: "cardId" });
+          }
+        };
+
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
     }
 
+    // 基本的なDB操作
     async function saveCards(cards) {
-      const db = await openDB()
-      const tx = db.transaction("cards", "readwrite")
-      const store = tx.objectStore("cards")
+      const db = await openDB();
+      const tx = db.transaction("cards", "readwrite");
+      const store = tx.objectStore("cards");
       const promises = cards.map(card => {
         return new Promise((resolve, reject) => {
-          const req = store.put(card)
-          req.onsuccess = () => resolve()
-          req.onerror = () => reject(req.error)
-        })
-      })
-      await Promise.all(promises)
+          const req = store.put(card);
+          req.onsuccess = () => resolve();
+          req.onerror = () => reject(req.error);
+        });
+      });
+      await Promise.all(promises);
     }
 
     async function loadCards() {
-      const db = await openDB()
-      const tx = db.transaction("cards", "readonly")
-      const store = tx.objectStore("cards")
+      const db = await openDB();
+      const tx = db.transaction("cards", "readonly");
+      const store = tx.objectStore("cards");
       return new Promise((resolve, reject) => {
-        const req = store.getAll()
-        req.onsuccess = () => resolve(req.result)
-        req.onerror = () => reject(req.error)
-      })
+        const req = store.getAll();
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+    }
+
+    async function loadReviewsByCardId(cardId) {
+      const db = await openDB();
+      const tx = db.transaction("reviews", "readonly");
+      const store = tx.objectStore("reviews");
+      const index = store.index("cardId");
+      return new Promise((resolve, reject) => {
+        const req = index.getAll(cardId);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+    }
+    
+    // 全レビュー取得（初期化用、件数が多い場合は最適化が必要）
+    async function loadAllReviews() {
+      const db = await openDB();
+      const tx = db.transaction("reviews", "readonly");
+      const store = tx.objectStore("reviews");
+      return new Promise((resolve, reject) => {
+        const req = store.getAll();
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
     }
 
     async function saveReviewToDB(review) {
-      const db = await openDB()
-      const tx = db.transaction("reviews", "readwrite")
-      const store = tx.objectStore("reviews")
+      const db = await openDB();
+      const tx = db.transaction("reviews", "readwrite");
+      const store = tx.objectStore("reviews");
       return new Promise((resolve, reject) => {
-        const req = store.add(review)
-        req.onsuccess = () => resolve(req.result)
-        req.onerror = () => reject(req.error)
-      })
+        const req = store.add(review);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
     }
 
-    /* --- ロジック --- */
-    function buildPathTree(cards) {
-      const root = {}
-      for (const card of cards) {
-        const parts = card.path.split("/")
-        let node = root
-        for (const part of parts) {
-          if (!node[part]) node[part] = {}
-          node = node[part]
-        }
-        if (!node.__cards__) node.__cards__ = []
-        node.__cards__.push(card)
+    async function saveStatsToDB(stats) {
+      const db = await openDB();
+      const tx = db.transaction("cardStats", "readwrite");
+      const store = tx.objectStore("cardStats");
+      store.put(stats); // awaitしない(Fire and forget)
+    }
+
+    /* --- 4. スケジューラ & 推定ロジック --- */
+    class Scheduler {
+      constructor() {
+        this.statsMap = new Map(); // cardId -> CardStats
+        this.cardsMap = new Map(); // cardId -> Card (実データ)
       }
-      return root
+
+      // 初期化: 対象カード群の統計を準備
+      async init(cards) {
+        this.cardsMap.clear();
+        this.statsMap.clear();
+        cards.forEach(c => this.cardsMap.set(c.id, c));
+
+        // DBから全レビューを取得して、対象カードの統計を構築
+        // ※ 本来は cardStats ストアからロードするが、ロジック整合性のため
+        //    今回は毎回履歴から再計算する方式をとる（堅牢性重視）
+        const allReviews = await loadAllReviews();
+        
+        // レビューをカードごとにグルーピング
+        const reviewsByCard = {};
+        allReviews.forEach(r => {
+          if (!reviewsByCard[r.cardId]) reviewsByCard[r.cardId] = [];
+          reviewsByCard[r.cardId].push(r);
+        });
+
+        // 各カードの統計を計算
+        for (const card of cards) {
+          const cardReviews = reviewsByCard[card.id] || [];
+          // 日付順にソート（念のため）
+          cardReviews.sort((a, b) => new Date(a.reviewedAt) - new Date(b.reviewedAt));
+          
+          const stats = new CardStats(card.id);
+          this.recalculateStats(stats, cardReviews);
+          this.statsMap.set(card.id, stats);
+        }
+      }
+
+      // 統計計算のコアロジック
+      recalculateStats(stats, reviews) {
+        if (reviews.length === 0) {
+          stats.state = "new";
+          stats.estimatedP = 0.5;
+          stats.lastReviewedAt = null;
+          stats.consecutiveHighP = 0;
+          return;
+        }
+
+        // 最後のレビュー時刻
+        const lastReview = reviews[reviews.length - 1];
+        stats.lastReviewedAt = new Date(lastReview.reviewedAt).getTime();
+
+        // 3.1 重み付き平均の準備
+        // 履歴を新しい順にする
+        const reversed = [...reviews].reverse();
+        
+        let weightedScoreSum = 0;
+        let weightedWeightSum = 0;
+
+        reversed.forEach((r, k) => {
+          // k = 0, 1, 2...
+          // w_k = 1 / (k + 2)
+          const weight = 1.0 / ((k + 1) + 2); // kは0始まりなので設計書のk=1始まりに合わせるなら (k+1)+2
+          weightedScoreSum += weight * (r.outcome === "correct" ? 1 : 0);
+          weightedWeightSum += weight;
+        });
+
+        // 3.2 ラプラス平滑化 (重み付き数値を代入)
+        // μ_i' = (s + α) / (n + α + β)
+        const s = weightedScoreSum;
+        const n = weightedWeightSum;
+        const mu_prime = (s + CONFIG.ALPHA) / (n + CONFIG.ALPHA + CONFIG.BETA);
+
+        // 3.3 記憶減衰
+        // t: 秒
+        const now = Date.now();
+        const t_sec = (now - stats.lastReviewedAt) / 1000;
+        const retentionScaleSec = CONFIG.RETENTION_SCALE_DAYS * 86400;
+        const retention = 1.0 / (1.0 + t_sec / retentionScaleSec);
+
+        // 3.4 統合推定正答率
+        let p = mu_prime * retention;
+        
+        // Clamp
+        if (p < CONFIG.EPSILON) p = CONFIG.EPSILON;
+        if (p > 1 - CONFIG.EPSILON) p = 1 - CONFIG.EPSILON;
+        
+        stats.estimatedP = p;
+
+        // 4.2 状態遷移判定 (直近の状況に基づいて更新)
+        // ここでは「今回の計算結果」に基づいて状態を更新する
+        // ※本来は履歴再生時に毎回遷移判定すべきだが、ロード時は最終状態だけ決める
+        
+        // 簡易実装: 現在の状態と p_i に基づいて決定
+        if (stats.state === "new") {
+          stats.state = "learning";
+          stats.consecutiveHighP = 0;
+        }
+
+        if (stats.state === "learning") {
+          if (p >= CONFIG.MASTER_PROB_THRESHOLD) {
+            stats.consecutiveHighP++;
+          } else {
+            stats.consecutiveHighP = 0;
+          }
+
+          if (stats.consecutiveHighP >= CONFIG.CONSECUTIVE_SUCCESS_REQUIRED) {
+            stats.state = "mastered";
+            stats.consecutiveHighP = 0; // リセット
+          }
+        } else if (stats.state === "mastered") {
+          if (p <= CONFIG.LEARNING_PROB_THRESHOLD) {
+            stats.state = "learning";
+            stats.consecutiveHighP = 0;
+          }
+        }
+      }
+
+      // レビュー記録と状態更新
+      async recordResult(cardId, outcome) {
+        const review = {
+          cardId,
+          outcome, // "correct" or "incorrect"
+          reviewedAt: new Date().toISOString()
+        };
+        
+        // 1. DB保存
+        await saveReviewToDB(review);
+
+        // 2. メモリ上のStats更新
+        // 履歴をDBから引くのはコストなので、メモリ上で保持すべきだが
+        // 簡易化のため、ここでは「現在のStats + 今回の結果」で再計算するのではなく
+        // DBからロードして再計算する（整合性重視）
+        // ※実運用では重いので、本来はStatsにhistory配列を持たせて追記する
+        const reviews = await loadReviewsByCardId(cardId);
+        // 今回の分が含まれていない可能性があるので確認（IndexedDBの反映ラグ）
+        // 基本的には await saveReviewToDB しているので含まれるはずだが、
+        // 念のため末尾チェック等は省略し、信頼する。
+        
+        const stats = this.statsMap.get(cardId);
+        this.recalculateStats(stats, reviews); // 再計算
+        
+        // 3. Stats永続化
+        saveStatsToDB(stats);
+      }
+
+      // 5.3 問題選択ロジック
+      selectNextCard() {
+        const statsList = Array.from(this.statsMap.values());
+        if (statsList.length === 0) return null;
+
+        const newCards = statsList.filter(s => s.state === "new");
+        const learningCards = statsList.filter(s => s.state === "learning");
+        const masteredCards = statsList.filter(s => s.state === "mastered");
+
+        // 1. Exploration
+        if (Math.random() < CONFIG.EXPLORATION_RATE) {
+          // learning U mastered からランダム
+          const pool = [...learningCards, ...masteredCards];
+          if (pool.length > 0) {
+            return this.pickRandom(pool);
+          }
+          // poolがなければ new へフォールバック
+          if (newCards.length > 0) return this.pickRandom(newCards);
+          return null; // 問題なし
+        }
+
+        // 2. Normal Selection
+        if (learningCards.length > CONFIG.LEARNING_THRESHOLD) {
+          // Learningが多い場合: Learningの中から「推定誤答」を探す
+          const likelyWrong = learningCards.filter(s => this.isLikelyWrong(s));
+          if (likelyWrong.length > 0) {
+            return this.pickRandom(likelyWrong);
+          } else {
+            return this.pickRandom(learningCards);
+          }
+        } else {
+          // Learningが少ない場合
+          
+          // Mastered のうち p <= 0.8 のものを Learning に戻す (処理としては状態を変える)
+          // ※ 本来はここで状態書き換えを永続化すべきだが、
+          //    メモリ上で扱い、次の回答時に確定させる形をとる
+          const degradable = masteredCards.filter(s => s.estimatedP <= CONFIG.LEARNING_PROB_THRESHOLD);
+          degradable.forEach(s => {
+             s.state = "learning"; // 即時降格
+             // リスト移動
+             masteredCards.splice(masteredCards.indexOf(s), 1);
+             learningCards.push(s);
+          });
+
+          // 再度 Learning の推定誤答チェック
+          const likelyWrong = learningCards.filter(s => this.isLikelyWrong(s));
+          if (likelyWrong.length > 0) {
+            return this.pickRandom(likelyWrong);
+          } else {
+            // New から
+            if (newCards.length > 0) {
+              return this.pickRandom(newCards);
+            } else {
+              // Newもなければ Learning -> Mastered の順
+              if (learningCards.length > 0) return this.pickRandom(learningCards);
+              if (masteredCards.length > 0) return this.pickRandom(masteredCards);
+            }
+          }
+        }
+        return null;
+      }
+
+      // 3.5 推定誤答フラグ
+      isLikelyWrong(stats) {
+        // z_i ~ Bernoulli(p_i)
+        // z_i = 1 (正答期待), 0 (誤答期待)
+        // ここでは「誤答しそう(z=0)」判定を行いたい
+        // Math.random() > p_i ならば「誤答しそう」
+        return Math.random() > stats.estimatedP;
+      }
+
+      pickRandom(list) {
+        const idx = Math.floor(Math.random() * list.length);
+        return this.cardsMap.get(list[idx].cardId);
+      }
+      
+      getStats(cardId) {
+        return this.statsMap.get(cardId);
+      }
+    }
+
+
+    /* --- 5. ビュー制御 --- */
+    const appEl = document.getElementById("app");
+    const importBar = document.getElementById("import");
+
+    function setImportBarVisibility(visible) {
+      importBar.style.display = visible ? "block" : "none";
+    }
+
+    function createBackButton(onClick) {
+      const container = document.createElement("div");
+      container.className = "back-button-container";
+      const btn = document.createElement("button");
+      btn.className = "back-btn";
+      btn.textContent = "← 中断して戻る";
+      btn.addEventListener("click", onClick);
+      container.appendChild(btn);
+      return container;
+    }
+
+    function createCardView(card, stats, { onSwipe }) {
+      const cardEl = document.createElement("div");
+      cardEl.className = "card";
+
+      // デバッグ情報
+      const debugEl = document.createElement("div");
+      debugEl.className = "card-stats-debug";
+      debugEl.innerHTML = `
+        State: <b>${stats.state}</b><br>
+        Est. P: ${(stats.estimatedP * 100).toFixed(1)}%<br>
+        Last: ${stats.lastReviewedAt ? new Date(stats.lastReviewedAt).toLocaleTimeString() : "Never"}
+      `;
+      cardEl.appendChild(debugEl);
+
+      const questionEl = document.createElement("div");
+      questionEl.className = "question";
+      questionEl.textContent = card.question;
+
+      const answerEl = document.createElement("div");
+      answerEl.className = "answer hidden";
+      answerEl.textContent = card.answer;
+      
+      if (card.note) {
+        const noteEl = document.createElement("div");
+        noteEl.style.fontSize = "0.8rem";
+        noteEl.style.color = "#888";
+        noteEl.style.marginTop = "10px";
+        noteEl.style.textAlign = "left";
+        noteEl.textContent = card.note;
+        answerEl.appendChild(noteEl);
+      }
+      
+      // ヒント（操作ガイド）
+      const guideEl = document.createElement("div");
+      guideEl.style.marginTop = "auto";
+      guideEl.style.paddingTop = "20px";
+      guideEl.style.fontSize = "0.8rem";
+      guideEl.style.color = "#ccc";
+      guideEl.style.textAlign = "center";
+      guideEl.textContent = "タップで答えを表示 / 左右スワイプで回答";
+      answerEl.appendChild(guideEl);
+
+      cardEl.append(questionEl, answerEl);
+      cardEl.addEventListener("click", () => answerEl.classList.toggle("hidden"));
+
+      let startX = null;
+      let startY = null;
+      cardEl.addEventListener("pointerdown", (e) => {
+        startX = e.clientX;
+        startY = e.clientY;
+        cardEl.setPointerCapture(e.pointerId);
+      });
+      cardEl.addEventListener("pointerup", (e) => {
+        if (startX === null) return;
+        const deltaX = e.clientX - startX;
+        const deltaY = e.clientY - startY;
+        const threshold = 60;
+        
+        if (Math.abs(deltaX) > threshold && Math.abs(deltaY) < 60) {
+          // Right swipe (正解), Left swipe (不正解)
+          // 一般的なUIでは右＝Positive(正解), 左＝Negative(不正解)が多いが
+          // Tinder等は右Like, 左Nope。
+          // ここでは 直感的に 右へ送る＝完了＝正解、左へ戻す＝やり直し＝不正解 としてみる
+          if (deltaX > 0) onSwipe("correct"); 
+          else onSwipe("incorrect");
+        }
+        startX = null;
+        startY = null;
+      });
+      return cardEl;
+    }
+
+    /* --- Path Browser & List View (既存機能) --- */
+    function createPathBrowser(tree, handlers) {
+      const container = document.createElement("div");
+      container.className = "path-browser";
+
+      function renderNode(node, depth = 0) {
+        const wrapper = document.createElement("div");
+        for (const key of Object.keys(node)) {
+          if (key === "__cards__") continue;
+          const row = document.createElement("div");
+          row.className = "folder-row";
+          
+          const infoDiv = document.createElement("div");
+          infoDiv.className = "folder-info";
+          infoDiv.textContent = key;
+          infoDiv.style.paddingLeft = `${(depth * 20) + 10}px`;
+          
+          const childCards = collectCards(node[key]);
+          const countSpan = document.createElement("span");
+          countSpan.style.float = "right";
+          countSpan.style.marginRight = "5px";
+          countSpan.style.color = "#999";
+          countSpan.style.fontSize = "0.9em";
+          countSpan.textContent = `${childCards.length}問`;
+          infoDiv.appendChild(countSpan);
+          
+          infoDiv.addEventListener("click", () => {
+            if (childCards.length === 0) return;
+            handlers.onPlay(childCards);
+          });
+          
+          // Kebab Menu
+          const kebabContainer = document.createElement("div");
+          kebabContainer.className = "kebab-container";
+          const kebabBtn = document.createElement("div");
+          kebabBtn.className = "kebab-btn";
+          kebabBtn.textContent = "︙";
+          
+          const menuPopup = document.createElement("div");
+          menuPopup.className = "menu-popup";
+          
+          const playItem = document.createElement("div");
+          playItem.className = "menu-item";
+          playItem.textContent = "学習開始";
+          playItem.addEventListener("click", (e) => {
+            e.stopPropagation();
+            handlers.onPlay(childCards);
+            closeAllMenus();
+          });
+          
+          const listItem = document.createElement("div");
+          listItem.className = "menu-item";
+          listItem.textContent = "問題一覧";
+          listItem.addEventListener("click", (e) => {
+            e.stopPropagation();
+            handlers.onList(childCards, key);
+            closeAllMenus();
+          });
+          
+          menuPopup.append(playItem, listItem);
+          kebabContainer.append(kebabBtn, menuPopup);
+          
+          kebabBtn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            const isOpen = menuPopup.classList.contains("show");
+            closeAllMenus();
+            if (!isOpen) menuPopup.classList.add("show");
+          });
+          
+          row.append(infoDiv, kebabContainer);
+          wrapper.appendChild(row);
+          wrapper.appendChild(renderNode(node[key], depth + 1));
+        }
+        return wrapper;
+      }
+      container.appendChild(renderNode(tree));
+      return container;
+    }
+
+    function closeAllMenus() {
+      document.querySelectorAll(".menu-popup.show").forEach(el => el.classList.remove("show"));
+    }
+    document.addEventListener("click", () => closeAllMenus());
+
+    /* --- メインフロー --- */
+    
+    // ユーティリティ
+    function buildPathTree(cards) {
+      const root = {};
+      for (const card of cards) {
+        const parts = card.path.split("/");
+        let node = root;
+        for (const part of parts) {
+          if (!node[part]) node[part] = {};
+          node = node[part];
+        }
+        if (!node.__cards__) node.__cards__ = [];
+        node.__cards__.push(card);
+      }
+      return root;
     }
 
     function collectCards(node) {
-      let result = []
-      if (node.__cards__) result = result.concat(node.__cards__)
+      let result = [];
+      if (node.__cards__) result = result.concat(node.__cards__);
       for (const key of Object.keys(node)) {
-        if (key !== "__cards__") result = result.concat(collectCards(node[key]))
+        if (key !== "__cards__") result = result.concat(collectCards(node[key]));
       }
-      return result
+      return result;
     }
 
     async function importXLSX(file, path) {
-      const data = await file.arrayBuffer()
-      const workbook = XLSX.read(data)
-      const firstSheetName = workbook.SheetNames[0]
-      const worksheet = workbook.Sheets[firstSheetName]
-      const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1 })
-      const dataRows = rows.length > 1 ? rows.slice(1) : []
+      const data = await file.arrayBuffer();
+      const workbook = XLSX.read(data);
+      const firstSheetName = workbook.SheetNames[0];
+      const worksheet = workbook.Sheets[firstSheetName];
+      const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+      const dataRows = rows.length > 1 ? rows.slice(1) : [];
       const cards = dataRows
         .filter(row => row.length > 0 && row[0])
         .map((row, index) => {
-          const question = row[0] ? String(row[0]) : ""
-          const answer = row[1] ? String(row[1]) : ""
-          const note = row[2] ? String(row[2]) : ""
+          const question = row[0] ? String(row[0]) : "";
+          const answer = row[1] ? String(row[1]) : "";
+          const note = row[2] ? String(row[2]) : "";
           return new Card({
             id: `${path}-${index}-${crypto.randomUUID()}`,
             path,
             question,
             answer,
             note
-          })
-        })
-      await saveCards(cards)
-      return cards
+          });
+        });
+      await saveCards(cards);
+      return cards;
     }
 
-    /* --- ビュー --- */
-    const appEl = document.getElementById("app")
-    const importBar = document.getElementById("import")
-
-    // インポートバーの表示切り替え
-    function setImportBarVisibility(visible) {
-      importBar.style.display = visible ? "block" : "none"
-    }
-
-    function createBackButton(onClick) {
-      const container = document.createElement("div")
-      container.className = "back-button-container"
-      const btn = document.createElement("button")
-      btn.className = "back-btn"
-      btn.textContent = "← 一覧へ戻る"
-      btn.addEventListener("click", onClick)
-      container.appendChild(btn)
-      return container
-    }
-
-    function createCardView(card, { onSwipe } = {}) {
-      const cardEl = document.createElement("div")
-      cardEl.className = "card"
-
-      const questionEl = document.createElement("div")
-      questionEl.className = "question"
-      questionEl.textContent = card.question
-
-      const answerEl = document.createElement("div")
-      answerEl.className = "answer hidden"
-      answerEl.textContent = card.answer
-      
-      if (card.note) {
-        const noteEl = document.createElement("div")
-        noteEl.style.fontSize = "0.8rem"
-        noteEl.style.color = "#888"
-        noteEl.style.marginTop = "10px"
-        noteEl.style.textAlign = "left"
-        noteEl.textContent = card.note
-        answerEl.appendChild(noteEl)
-      }
-
-      cardEl.append(questionEl, answerEl)
-      cardEl.addEventListener("click", () => answerEl.classList.toggle("hidden"))
-
-      let startX = null
-      let startY = null 
-      cardEl.addEventListener("pointerdown", (e) => {
-        startX = e.clientX
-        startY = e.clientY
-        cardEl.setPointerCapture(e.pointerId)
-      })
-      cardEl.addEventListener("pointerup", (e) => {
-        if (startX === null) return
-        const deltaX = e.clientX - startX
-        const deltaY = e.clientY - startY
-        const threshold = 80
-        if (Math.abs(deltaX) > threshold && Math.abs(deltaY) < 50) {
-          if (deltaX > 0) onSwipe?.("right")
-          else onSwipe?.("left")
-        }
-        startX = null
-        startY = null
-      })
-      return cardEl
-    }
-
-    function createPathBrowser(tree, handlers) {
-      const container = document.createElement("div")
-      container.className = "path-browser"
-
-      function renderNode(node, depth = 0) {
-        const wrapper = document.createElement("div")
-        for (const key of Object.keys(node)) {
-          if (key === "__cards__") continue
-          const row = document.createElement("div")
-          row.className = "folder-row"
-          const infoDiv = document.createElement("div")
-          infoDiv.className = "folder-info"
-          infoDiv.textContent = key
-          infoDiv.style.paddingLeft = `${(depth * 20) + 10}px`
-          const childCards = collectCards(node[key])
-          const countSpan = document.createElement("span")
-          countSpan.style.float = "right"
-          countSpan.style.marginRight = "5px"
-          countSpan.style.color = "#999"
-          countSpan.style.fontSize = "0.9em"
-          countSpan.textContent = `${childCards.length}問`
-          infoDiv.appendChild(countSpan)
-          infoDiv.addEventListener("click", () => {
-            if (childCards.length === 0) return
-            handlers.onPlay(childCards)
-          })
-          
-          const kebabContainer = document.createElement("div")
-          kebabContainer.className = "kebab-container"
-          const kebabBtn = document.createElement("div")
-          kebabBtn.className = "kebab-btn"
-          kebabBtn.textContent = "︙"
-          const menuPopup = document.createElement("div")
-          menuPopup.className = "menu-popup"
-          const playItem = document.createElement("div")
-          playItem.className = "menu-item"
-          playItem.textContent = "プレイ"
-          playItem.addEventListener("click", (e) => {
-            e.stopPropagation()
-            handlers.onPlay(childCards)
-            closeAllMenus()
-          })
-          const listItem = document.createElement("div")
-          listItem.className = "menu-item"
-          listItem.textContent = "問題一覧"
-          listItem.addEventListener("click", (e) => {
-            e.stopPropagation()
-            handlers.onList(childCards, key)
-            closeAllMenus()
-          })
-          menuPopup.append(playItem, listItem)
-          kebabContainer.append(kebabBtn, menuPopup)
-          kebabBtn.addEventListener("click", (e) => {
-            e.stopPropagation()
-            const isOpen = menuPopup.classList.contains("show")
-            closeAllMenus()
-            if (!isOpen) menuPopup.classList.add("show")
-          })
-          row.append(infoDiv, kebabContainer)
-          wrapper.appendChild(row)
-          wrapper.appendChild(renderNode(node[key], depth + 1))
-        }
-        return wrapper
-      }
-      container.appendChild(renderNode(tree))
-      return container
-    }
-
-    function closeAllMenus() {
-      document.querySelectorAll(".menu-popup.show").forEach(el => el.classList.remove("show"))
-    }
-    document.addEventListener("click", () => closeAllMenus())
-
-    /* --- メインフロー --- */
+    /* --- 画面遷移関数 --- */
+    
+    // A. フォルダ選択画面
     async function showPathSelection() {
-      // フォルダ画面なのでインポートバーを表示
-      setImportBarVisibility(true)
-      
-      const cards = await loadCards()
-      appEl.innerHTML = ""
+      setImportBarVisibility(true);
+      const cards = await loadCards();
+      appEl.innerHTML = "";
 
       if (cards.length === 0) {
-        const msg = document.createElement("div")
-        msg.textContent = "問題がありません。右上のボタンからExcelファイルをインポートしてください。"
-        msg.style.padding = "40px 20px"
-        msg.style.textAlign = "center"
-        appEl.appendChild(msg)
-        return
+        const msg = document.createElement("div");
+        msg.textContent = "問題がありません。右上のボタンからExcelファイルをインポートしてください。";
+        msg.style.padding = "40px 20px";
+        msg.style.textAlign = "center";
+        appEl.appendChild(msg);
+        return;
       }
 
-      const tree = buildPathTree(cards)
+      const tree = buildPathTree(cards);
       const browser = createPathBrowser(tree, {
-        onPlay: (selectedCards) => startQuiz(selectedCards),
+        onPlay: (selectedCards) => startSmartQuiz(selectedCards),
         onList: (selectedCards, folderName) => showCardList(selectedCards, folderName)
-      })
-      appEl.appendChild(browser)
+      });
+      appEl.appendChild(browser);
     }
 
-    function renderCard(card, onNext) {
-      // クイズ画面なのでインポートバーを非表示
-      setImportBarVisibility(false)
-      appEl.innerHTML = ""
-      appEl.appendChild(createBackButton(() => showPathSelection()))
-      const cardView = createCardView(card, {
-        onSwipe(direction) {
-          const outcome = direction === "left" ? "correct" : "incorrect"
-          saveReviewToDB({
-            cardId: card.id,
-            cardPath: card.path,
-            outcome,
-            reviewedAt: new Date().toISOString()
-          })
-          onNext()
-        }
-      })
-      appEl.appendChild(cardView)
-    }
-
+    // B. 問題一覧画面
     function showCardList(cards, title) {
-      // 一覧画面なのでインポートバーを非表示
-      setImportBarVisibility(false)
-      appEl.innerHTML = ""
-      appEl.appendChild(createBackButton(() => showPathSelection()))
+      setImportBarVisibility(false);
+      appEl.innerHTML = "";
+      appEl.appendChild(createBackButton(() => showPathSelection()));
 
-      const container = document.createElement("div")
-      container.className = "card-list-view"
-      const header = document.createElement("div")
-      header.className = "list-header"
-      header.textContent = `${title} (${cards.length}問)`
-      container.appendChild(header)
+      const container = document.createElement("div");
+      container.className = "card-list-view";
+      const header = document.createElement("div");
+      header.className = "list-header";
+      header.textContent = `${title} (${cards.length}問)`;
+      container.appendChild(header);
 
       cards.forEach((card, i) => {
-        const item = document.createElement("div")
-        item.className = "list-item"
-        const qDiv = document.createElement("div")
-        qDiv.className = "list-q"
-        qDiv.textContent = `Q${i+1}. ${card.question}`
-        const aDiv = document.createElement("div")
-        aDiv.className = "list-a"
-        aDiv.textContent = `A. ${card.answer}`
-        item.appendChild(qDiv)
-        item.appendChild(aDiv)
+        const item = document.createElement("div");
+        item.className = "list-item";
+        const qDiv = document.createElement("div");
+        qDiv.className = "list-q";
+        qDiv.textContent = `Q${i+1}. ${card.question}`;
+        const aDiv = document.createElement("div");
+        aDiv.className = "list-a";
+        aDiv.textContent = `A. ${card.answer}`;
+        item.appendChild(qDiv);
+        item.appendChild(aDiv);
         if (card.note) {
-          const nDiv = document.createElement("div")
-          nDiv.className = "list-note"
-          nDiv.textContent = `Memo: ${card.note}`
-          item.appendChild(nDiv)
+          const nDiv = document.createElement("div");
+          nDiv.className = "list-note";
+          nDiv.textContent = `Memo: ${card.note}`;
+          item.appendChild(nDiv);
         }
-        container.appendChild(item)
-      })
-      appEl.appendChild(container)
+        container.appendChild(item);
+      });
+      appEl.appendChild(container);
     }
 
-    function startQuiz(cards) {
-      if (!cards || cards.length === 0) return
-      const shuffled = [...cards].sort(() => Math.random() - 0.5)
-      let index = 0
-      function next() {
-        const card = shuffled[index]
-        renderCard(card, () => {
-          index = (index + 1) % shuffled.length
-          next()
-        })
+    // C. 学習画面 (Scheduler利用)
+    async function startSmartQuiz(cards) {
+      if (!cards || cards.length === 0) return;
+      
+      setImportBarVisibility(false);
+      appEl.innerHTML = "<div style='padding:40px; text-align:center;'>学習データを準備中...</div>";
+
+      // Scheduler初期化
+      const scheduler = new Scheduler();
+      await scheduler.init(cards);
+
+      // 学習ループ
+      function nextLoop() {
+        const nextCard = scheduler.selectNextCard();
+        
+        if (!nextCard) {
+          alert("出題可能なカードがありません。");
+          showPathSelection();
+          return;
+        }
+
+        const stats = scheduler.getStats(nextCard.id);
+        
+        appEl.innerHTML = "";
+        appEl.appendChild(createBackButton(() => showPathSelection()));
+        
+        const cardView = createCardView(nextCard, stats, {
+          onSwipe: async (outcome) => { // "correct" or "incorrect"
+            // アニメーション用に少し待ってもいいが、ここでは即時処理
+            appEl.innerHTML = "<div style='display:flex;height:100%;align-items:center;justify-content:center;font-weight:bold;color:#888;'>Saving...</div>";
+            
+            await scheduler.recordResult(nextCard.id, outcome);
+            nextLoop();
+          }
+        });
+        
+        appEl.appendChild(cardView);
       }
-      next()
+
+      nextLoop();
     }
 
-    const tsvInput = document.getElementById("tsvInput")
+
+    /* --- イベント設定 --- */
+    const tsvInput = document.getElementById("tsvInput");
     tsvInput.addEventListener("change", async e => {
-      const file = e.target.files[0]
-      if (!file) return
-      const path = prompt("この問題群のフォルダ名を入力してください（例: 英語/英単語/Part1）")
+      const file = e.target.files[0];
+      if (!file) return;
+      const path = prompt("この問題群のフォルダ名を入力してください（例: 英語/英単語/Part1）");
       if (!path) { tsvInput.value = ""; return; }
       try {
-        await importXLSX(file, path)
-        tsvInput.value = ""
-        showPathSelection()
+        await importXLSX(file, path);
+        tsvInput.value = "";
+        showPathSelection();
       } catch (err) {
-        console.error(err)
-        alert("読み込みに失敗しました")
+        console.error(err);
+        alert("読み込みに失敗しました");
       }
-    })
+    });
 
-    showPathSelection()
+    // 初回起動
+    showPathSelection();
+
   </script>
 </body>
 </html>
