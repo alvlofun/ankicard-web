@@ -82,10 +82,6 @@ async function showPathSelection() {
   app.appendChild(browser)
 }
 
-const browser = createPathBrowser(tree, (selectedCards) => {
-  startQuiz(selectedCards)
-})
-
 /* =====================
    出題開始処理
 ===================== */
