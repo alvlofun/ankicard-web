@@ -244,7 +244,6 @@
         right: 10px;
         z-index: 1000;
         display: none; /* JSで制御 */
-        display: flex;
         gap: 10px;
     }
 
@@ -688,9 +687,13 @@
           this.reviewsByCard[r.cardId].push(r);
         });
         // Sort
-        Object.values(this.reviewsByCard).forEach(list => {
-          list.sort((a, b) => new Date(a.reviewedAt) - new Date(b.reviewedAt));
-        });
+        const lists = Object.values(this.reviewsByCard);
+        for (let i = 0; i < lists.length; i++) {
+          lists[i].sort((a, b) => new Date(a.reviewedAt) - new Date(b.reviewedAt));
+          if (i % 50 === 0) {
+            await new Promise(r => setTimeout(r, 0));
+          }
+        }
         return allReviews.length;
       }
 
@@ -1004,8 +1007,11 @@
     }
 
     /* --- 画面遷移関数 --- */
+    let firstLaunch = true;
+
     async function showPathSelection() {
-      setToolbarVisibility(true);
+      setToolbarVisibility(!firstLaunch);
+      firstLaunch = false;
       const cards = await loadCards();
       appEl.innerHTML = "";
 
@@ -1116,12 +1122,14 @@
       mcmcActions.style.display = "none";
       mcmcProgress.style.width = "0%";
 
+      await new Promise(r => setTimeout(r, 0));
+
       const engine = new MCMCEngine();
       const count = await engine.prepare();
       
-      if (count < 10) {
-        mcmcStatus.textContent = "履歴データが少なすぎるため、実行できません (最低10件推奨)";
-        setTimeout(() => mcmcModal.classList.add("hidden"), 2000);
+      const allReviews = await loadAllReviews();
+      if (allReviews.length < 10) {
+        mcmcStatus.textContent = "履歴データが少なすぎます";
         return;
       }
 
