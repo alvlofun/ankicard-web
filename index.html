@@ -237,51 +237,155 @@
         overflow: hidden;
     }
 
-    /* インポートボタン */
-    #import {
+    /* ツールバー（インポート＆MCMC） */
+    #toolbar {
         position: fixed;
         top: 10px;
         right: 10px;
         z-index: 1000;
+        display: none; /* JSで制御 */
+        display: flex;
+        gap: 10px;
+    }
+
+    .tool-btn {
         background: rgba(255, 255, 255, 0.9);
         padding: 6px 10px;
         border-radius: 6px;
         box-shadow: 0 2px 8px rgba(0,0,0,0.15);
         font-size: 0.8rem;
-        display: none;
+        cursor: pointer;
+        border: 1px solid #ddd;
+        display: flex;
+        align-items: center;
+        justify-content: center;
     }
+
+    /* モーダル */
+    .modal-overlay {
+      position: fixed;
+      top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(0,0,0,0.5);
+      z-index: 3000;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    .modal-content {
+      background: white;
+      padding: 20px;
+      border-radius: 12px;
+      width: 90%;
+      max-width: 500px;
+      max-height: 80vh;
+      overflow-y: auto;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+    }
+    .modal-title {
+      font-weight: bold;
+      font-size: 1.2rem;
+      margin-bottom: 15px;
+    }
+    .progress-bar {
+      width: 100%;
+      height: 10px;
+      background: #eee;
+      border-radius: 5px;
+      overflow: hidden;
+      margin: 10px 0;
+    }
+    .progress-fill {
+      height: 100%;
+      background: #4caf50;
+      width: 0%;
+      transition: width 0.1s;
+    }
+    .param-row {
+      display: flex;
+      justify-content: space-between;
+      margin: 8px 0;
+      padding: 8px;
+      background: #f9f9f9;
+      border-radius: 4px;
+    }
+    .param-name { font-weight: bold; }
+    .param-val { font-family: monospace; }
+    .changed { color: #d32f2f; font-weight: bold; }
+    .improved { color: #2e7d32; font-weight: bold; }
+
+    .modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      margin-top: 20px;
+    }
+    .btn-primary {
+      background: #333; color: white; border: none;
+      padding: 8px 16px; border-radius: 4px; cursor: pointer;
+    }
+    .btn-secondary {
+      background: #eee; color: #333; border: none;
+      padding: 8px 16px; border-radius: 4px; cursor: pointer;
+    }
+
   </style>
 </head>
 <body>
 
-  <!-- ファイル選択 -->
-  <div id="import">
-    <span style="font-weight:bold; margin-right:5px;">Excel読込:</span>
-    <input type="file" id="tsvInput" accept=".xlsx, .xls" />
+  <!-- ツールバー -->
+  <div id="toolbar">
+    <div class="tool-btn" id="mcmcBtn">
+      ⚙️ MCMC最適化
+    </div>
+    <div class="tool-btn">
+      <span style="font-weight:bold; margin-right:5px;">Excel:</span>
+      <input type="file" id="tsvInput" accept=".xlsx, .xls" style="width:170px;" />
+    </div>
   </div>
 
   <main id="app"></main>
 
+  <!-- MCMC モーダル -->
+  <div id="mcmcModal" class="modal-overlay hidden">
+    <div class="modal-content">
+      <div class="modal-title">パラメータ最適化 (MCMC)</div>
+      <div id="mcmcStatus">準備中...</div>
+      <div class="progress-bar"><div id="mcmcProgress" class="progress-fill"></div></div>
+      <div id="mcmcResults"></div>
+      <div class="modal-actions" id="mcmcActions" style="display:none;">
+        <button class="btn-secondary" id="mcmcCancel">キャンセル</button>
+        <button class="btn-primary" id="mcmcApply">適用する</button>
+      </div>
+    </div>
+  </div>
+
   <script>
-    /* --- 1. 定数・パラメータ --- */
-    const CONFIG = {
-      // 記憶減衰パラメータ (秒)
+    /* --- 1. 定数・パラメータ (LocalStorage対応) --- */
+    const DEFAULT_CONFIG = {
       RETENTION_SCALE_DAYS: 9,
-      
-      // 平滑化パラメータ
       ALPHA: 1,
       BETA: 1,
       EPSILON: 0.01,
-
-      // 出題制御パラメータ
       EXPLORATION_RATE: 0.1,
-      LEARNING_THRESHOLD: 5, // テスト用に少なめに設定
-      
-      // 状態遷移パラメータ
+      LEARNING_THRESHOLD: 5,
       MASTER_PROB_THRESHOLD: 0.9,
       LEARNING_PROB_THRESHOLD: 0.8,
-      CONSECUTIVE_SUCCESS_REQUIRED: 2 // Master昇格に必要な連続高評価回数
+      CONSECUTIVE_SUCCESS_REQUIRED: 2
     };
+
+    // 設定のロード
+    let CONFIG = { ...DEFAULT_CONFIG };
+    try {
+      const savedConfig = localStorage.getItem("ankiAppConfig");
+      if (savedConfig) {
+        const parsed = JSON.parse(savedConfig);
+        CONFIG = { ...CONFIG, ...parsed }; // マージ
+      }
+    } catch(e) { console.error("Config load failed", e); }
+
+    function saveConfig() {
+      localStorage.setItem("ankiAppConfig", JSON.stringify(CONFIG));
+    }
 
     /* --- 2. データ構造 --- */
     class Card {
@@ -294,21 +398,19 @@
       }
     }
 
-    // メモリ上の状態管理用オブジェクト
     class CardStats {
       constructor(cardId) {
         this.cardId = cardId;
-        this.state = "new"; // "new" | "learning" | "mastered"
-        this.lastReviewedAt = null; // timestamp (ms)
-        this.estimatedP = 0.5; // 初期値
-        this.consecutiveHighP = 0; // learning -> mastered 判定用
-        this.history = []; // 直近の履歴（重み計算用）
+        this.state = "new"; 
+        this.lastReviewedAt = null; 
+        this.estimatedP = 0.5;
+        this.consecutiveHighP = 0;
       }
     }
 
     /* --- 3. データベース設定 --- */
     const DB_NAME = "ankiApp";
-    const DB_VERSION = 3; // バージョンアップ
+    const DB_VERSION = 3; 
 
     function openDB() {
       return new Promise((resolve, reject) => {
@@ -324,10 +426,8 @@
           
           if (!db.objectStoreNames.contains("reviews")) {
             const reviewStore = db.createObjectStore("reviews", { keyPath: "id", autoIncrement: true });
-            // cardId で検索できるようにインデックス追加
             reviewStore.createIndex("cardId", "cardId", { unique: false });
           } else {
-            // 既存ストアがある場合、インデックスの存在確認・追加
             const reviewStore = tx.objectStore("reviews");
             if (!reviewStore.indexNames.contains("cardId")) {
               reviewStore.createIndex("cardId", "cardId", { unique: false });
@@ -344,7 +444,6 @@
       });
     }
 
-    // 基本的なDB操作
     async function saveCards(cards) {
       const db = await openDB();
       const tx = db.transaction("cards", "readwrite");
@@ -382,7 +481,6 @@
       });
     }
     
-    // 全レビュー取得（初期化用、件数が多い場合は最適化が必要）
     async function loadAllReviews() {
       const db = await openDB();
       const tx = db.transaction("reviews", "readonly");
@@ -409,48 +507,75 @@
       const db = await openDB();
       const tx = db.transaction("cardStats", "readwrite");
       const store = tx.objectStore("cardStats");
-      store.put(stats); // awaitしない(Fire and forget)
+      store.put(stats);
     }
 
-    /* --- 4. スケジューラ & 推定ロジック --- */
+    /* --- 4. スケジューラ & MCMC ロジック --- */
+    
+    // 統計計算コアロジック (純粋関数化してMCMCからも使えるようにする)
+    function calculateP(reviews, config, targetTime = Date.now()) {
+      if (!reviews || reviews.length === 0) return 0.5;
+
+      const lastReview = reviews[reviews.length - 1];
+      const lastReviewedAt = new Date(lastReview.reviewedAt).getTime();
+
+      // 重み付き平均
+      const reversed = [...reviews].reverse();
+      let weightedScoreSum = 0;
+      let weightedWeightSum = 0;
+
+      reversed.forEach((r, k) => {
+        const weight = 1.0 / ((k + 1) + 2);
+        weightedScoreSum += weight * (r.outcome === "correct" ? 1 : 0);
+        weightedWeightSum += weight;
+      });
+
+      // ラプラス平滑化
+      const mu_prime = (weightedScoreSum + config.ALPHA) / (weightedWeightSum + config.ALPHA + config.BETA);
+
+      // 記憶減衰
+      const t_sec = (targetTime - lastReviewedAt) / 1000;
+      const retentionScaleSec = config.RETENTION_SCALE_DAYS * 86400;
+      const retention = 1.0 / (1.0 + t_sec / retentionScaleSec);
+
+      let p = mu_prime * retention;
+      
+      // Clamp
+      if (p < config.EPSILON) p = config.EPSILON;
+      if (p > 1 - config.EPSILON) p = 1 - config.EPSILON;
+
+      return p;
+    }
+
     class Scheduler {
       constructor() {
-        this.statsMap = new Map(); // cardId -> CardStats
-        this.cardsMap = new Map(); // cardId -> Card (実データ)
+        this.statsMap = new Map();
+        this.cardsMap = new Map();
       }
 
-      // 初期化: 対象カード群の統計を準備
       async init(cards) {
         this.cardsMap.clear();
         this.statsMap.clear();
         cards.forEach(c => this.cardsMap.set(c.id, c));
 
-        // DBから全レビューを取得して、対象カードの統計を構築
-        // ※ 本来は cardStats ストアからロードするが、ロジック整合性のため
-        //    今回は毎回履歴から再計算する方式をとる（堅牢性重視）
         const allReviews = await loadAllReviews();
-        
-        // レビューをカードごとにグルーピング
         const reviewsByCard = {};
         allReviews.forEach(r => {
           if (!reviewsByCard[r.cardId]) reviewsByCard[r.cardId] = [];
           reviewsByCard[r.cardId].push(r);
         });
 
-        // 各カードの統計を計算
         for (const card of cards) {
           const cardReviews = reviewsByCard[card.id] || [];
-          // 日付順にソート（念のため）
           cardReviews.sort((a, b) => new Date(a.reviewedAt) - new Date(b.reviewedAt));
           
           const stats = new CardStats(card.id);
-          this.recalculateStats(stats, cardReviews);
+          this.updateStatsObject(stats, cardReviews);
           this.statsMap.set(card.id, stats);
         }
       }
 
-      // 統計計算のコアロジック
-      recalculateStats(stats, reviews) {
+      updateStatsObject(stats, reviews) {
         if (reviews.length === 0) {
           stats.state = "new";
           stats.estimatedP = 0.5;
@@ -459,52 +584,11 @@
           return;
         }
 
-        // 最後のレビュー時刻
-        const lastReview = reviews[reviews.length - 1];
-        stats.lastReviewedAt = new Date(lastReview.reviewedAt).getTime();
-
-        // 3.1 重み付き平均の準備
-        // 履歴を新しい順にする
-        const reversed = [...reviews].reverse();
-        
-        let weightedScoreSum = 0;
-        let weightedWeightSum = 0;
-
-        reversed.forEach((r, k) => {
-          // k = 0, 1, 2...
-          // w_k = 1 / (k + 2)
-          const weight = 1.0 / ((k + 1) + 2); // kは0始まりなので設計書のk=1始まりに合わせるなら (k+1)+2
-          weightedScoreSum += weight * (r.outcome === "correct" ? 1 : 0);
-          weightedWeightSum += weight;
-        });
-
-        // 3.2 ラプラス平滑化 (重み付き数値を代入)
-        // μ_i' = (s + α) / (n + α + β)
-        const s = weightedScoreSum;
-        const n = weightedWeightSum;
-        const mu_prime = (s + CONFIG.ALPHA) / (n + CONFIG.ALPHA + CONFIG.BETA);
-
-        // 3.3 記憶減衰
-        // t: 秒
-        const now = Date.now();
-        const t_sec = (now - stats.lastReviewedAt) / 1000;
-        const retentionScaleSec = CONFIG.RETENTION_SCALE_DAYS * 86400;
-        const retention = 1.0 / (1.0 + t_sec / retentionScaleSec);
-
-        // 3.4 統合推定正答率
-        let p = mu_prime * retention;
-        
-        // Clamp
-        if (p < CONFIG.EPSILON) p = CONFIG.EPSILON;
-        if (p > 1 - CONFIG.EPSILON) p = 1 - CONFIG.EPSILON;
-        
+        const p = calculateP(reviews, CONFIG);
         stats.estimatedP = p;
+        stats.lastReviewedAt = new Date(reviews[reviews.length - 1].reviewedAt).getTime();
 
-        // 4.2 状態遷移判定 (直近の状況に基づいて更新)
-        // ここでは「今回の計算結果」に基づいて状態を更新する
-        // ※本来は履歴再生時に毎回遷移判定すべきだが、ロード時は最終状態だけ決める
-        
-        // 簡易実装: 現在の状態と p_i に基づいて決定
+        // 状態遷移ロジック
         if (stats.state === "new") {
           stats.state = "learning";
           stats.consecutiveHighP = 0;
@@ -516,10 +600,9 @@
           } else {
             stats.consecutiveHighP = 0;
           }
-
           if (stats.consecutiveHighP >= CONFIG.CONSECUTIVE_SUCCESS_REQUIRED) {
             stats.state = "mastered";
-            stats.consecutiveHighP = 0; // リセット
+            stats.consecutiveHighP = 0;
           }
         } else if (stats.state === "mastered") {
           if (p <= CONFIG.LEARNING_PROB_THRESHOLD) {
@@ -529,35 +612,19 @@
         }
       }
 
-      // レビュー記録と状態更新
       async recordResult(cardId, outcome) {
         const review = {
           cardId,
-          outcome, // "correct" or "incorrect"
+          outcome, 
           reviewedAt: new Date().toISOString()
         };
-        
-        // 1. DB保存
         await saveReviewToDB(review);
-
-        // 2. メモリ上のStats更新
-        // 履歴をDBから引くのはコストなので、メモリ上で保持すべきだが
-        // 簡易化のため、ここでは「現在のStats + 今回の結果」で再計算するのではなく
-        // DBからロードして再計算する（整合性重視）
-        // ※実運用では重いので、本来はStatsにhistory配列を持たせて追記する
         const reviews = await loadReviewsByCardId(cardId);
-        // 今回の分が含まれていない可能性があるので確認（IndexedDBの反映ラグ）
-        // 基本的には await saveReviewToDB しているので含まれるはずだが、
-        // 念のため末尾チェック等は省略し、信頼する。
-        
         const stats = this.statsMap.get(cardId);
-        this.recalculateStats(stats, reviews); // 再計算
-        
-        // 3. Stats永続化
+        this.updateStatsObject(stats, reviews);
         saveStatsToDB(stats);
       }
 
-      // 5.3 問題選択ロジック
       selectNextCard() {
         const statsList = Array.from(this.statsMap.values());
         if (statsList.length === 0) return null;
@@ -566,65 +633,34 @@
         const learningCards = statsList.filter(s => s.state === "learning");
         const masteredCards = statsList.filter(s => s.state === "mastered");
 
-        // 1. Exploration
         if (Math.random() < CONFIG.EXPLORATION_RATE) {
-          // learning U mastered からランダム
           const pool = [...learningCards, ...masteredCards];
-          if (pool.length > 0) {
-            return this.pickRandom(pool);
-          }
-          // poolがなければ new へフォールバック
+          if (pool.length > 0) return this.pickRandom(pool);
           if (newCards.length > 0) return this.pickRandom(newCards);
-          return null; // 問題なし
+          return null;
         }
 
-        // 2. Normal Selection
         if (learningCards.length > CONFIG.LEARNING_THRESHOLD) {
-          // Learningが多い場合: Learningの中から「推定誤答」を探す
           const likelyWrong = learningCards.filter(s => this.isLikelyWrong(s));
-          if (likelyWrong.length > 0) {
-            return this.pickRandom(likelyWrong);
-          } else {
-            return this.pickRandom(learningCards);
-          }
+          return likelyWrong.length > 0 ? this.pickRandom(likelyWrong) : this.pickRandom(learningCards);
         } else {
-          // Learningが少ない場合
-          
-          // Mastered のうち p <= 0.8 のものを Learning に戻す (処理としては状態を変える)
-          // ※ 本来はここで状態書き換えを永続化すべきだが、
-          //    メモリ上で扱い、次の回答時に確定させる形をとる
           const degradable = masteredCards.filter(s => s.estimatedP <= CONFIG.LEARNING_PROB_THRESHOLD);
           degradable.forEach(s => {
-             s.state = "learning"; // 即時降格
-             // リスト移動
+             s.state = "learning"; 
              masteredCards.splice(masteredCards.indexOf(s), 1);
              learningCards.push(s);
           });
 
-          // 再度 Learning の推定誤答チェック
           const likelyWrong = learningCards.filter(s => this.isLikelyWrong(s));
-          if (likelyWrong.length > 0) {
-            return this.pickRandom(likelyWrong);
-          } else {
-            // New から
-            if (newCards.length > 0) {
-              return this.pickRandom(newCards);
-            } else {
-              // Newもなければ Learning -> Mastered の順
-              if (learningCards.length > 0) return this.pickRandom(learningCards);
-              if (masteredCards.length > 0) return this.pickRandom(masteredCards);
-            }
-          }
+          if (likelyWrong.length > 0) return this.pickRandom(likelyWrong);
+          if (newCards.length > 0) return this.pickRandom(newCards);
+          if (learningCards.length > 0) return this.pickRandom(learningCards);
+          if (masteredCards.length > 0) return this.pickRandom(masteredCards);
         }
         return null;
       }
 
-      // 3.5 推定誤答フラグ
       isLikelyWrong(stats) {
-        // z_i ~ Bernoulli(p_i)
-        // z_i = 1 (正答期待), 0 (誤答期待)
-        // ここでは「誤答しそう(z=0)」判定を行いたい
-        // Math.random() > p_i ならば「誤答しそう」
         return Math.random() > stats.estimatedP;
       }
 
@@ -638,13 +674,123 @@
       }
     }
 
+    /* --- MCMC Engine --- */
+    class MCMCEngine {
+      constructor() {
+        this.reviewsByCard = {};
+      }
+
+      async prepare() {
+        const allReviews = await loadAllReviews();
+        this.reviewsByCard = {};
+        allReviews.forEach(r => {
+          if (!this.reviewsByCard[r.cardId]) this.reviewsByCard[r.cardId] = [];
+          this.reviewsByCard[r.cardId].push(r);
+        });
+        // Sort
+        Object.values(this.reviewsByCard).forEach(list => {
+          list.sort((a, b) => new Date(a.reviewedAt) - new Date(b.reviewedAt));
+        });
+        return allReviews.length;
+      }
+
+      // 対数尤度計算
+      // L = Σ log(P(actual_outcome | history, params))
+      calculateLogLikelihood(params) {
+        let logLikelihood = 0;
+        
+        for (const cardId in this.reviewsByCard) {
+          const reviews = this.reviewsByCard[cardId];
+          // 2回目以降の回答について予測評価を行う
+          // (初回は履歴がないので、デフォルト0.5スタートだが、ここではスキップまたは評価に含める)
+          // 今回のモデルでは履歴0件でも推定値が出るので、全件評価する
+          
+          for (let i = 0; i < reviews.length; i++) {
+            const currentReview = reviews[i];
+            const history = reviews.slice(0, i); // 今回より前の履歴
+            
+            // パラメータに基づいて確率推定
+            const predictedP = calculateP(history, params, new Date(currentReview.reviewedAt).getTime());
+            
+            // 尤度加算
+            // outcome=correctなら p, incorrectなら 1-p
+            // log(p) を足す
+            const prob = currentReview.outcome === "correct" ? predictedP : (1 - predictedP);
+            // 0除算回避
+            const safeProb = Math.max(1e-9, Math.min(1 - 1e-9, prob));
+            
+            logLikelihood += Math.log(safeProb);
+          }
+        }
+        return logLikelihood;
+      }
+
+      // 実行
+      async run(iterations = 1000, onProgress) {
+        // パラメータ空間: Alpha, Beta, RetentionScale
+        let currentParams = { ...CONFIG };
+        let currentL = this.calculateLogLikelihood(currentParams);
+        let bestParams = { ...currentParams };
+        let bestL = currentL;
+        
+        // 提案分布の標準偏差（調整幅）
+        const proposalSigma = {
+          ALPHA: 0.1,
+          BETA: 0.1,
+          RETENTION_SCALE_DAYS: 0.5
+        };
+
+        const batchSize = 10;
+        
+        for (let i = 0; i < iterations; i++) {
+          if (i % batchSize === 0) {
+            onProgress(i, iterations, currentL);
+            await new Promise(r => setTimeout(r, 0)); // UIブロック回避
+          }
+
+          // 提案 (Proposal)
+          const newParams = { ...currentParams };
+          
+          // ランダムウォーク
+          if (Math.random() < 0.33) newParams.ALPHA += (Math.random() - 0.5) * proposalSigma.ALPHA;
+          else if (Math.random() < 0.5) newParams.BETA += (Math.random() - 0.5) * proposalSigma.BETA;
+          else newParams.RETENTION_SCALE_DAYS += (Math.random() - 0.5) * proposalSigma.RETENTION_SCALE_DAYS;
+
+          // 制約チェック
+          if (newParams.ALPHA < 0.1) newParams.ALPHA = 0.1;
+          if (newParams.BETA < 0.1) newParams.BETA = 0.1;
+          if (newParams.RETENTION_SCALE_DAYS < 1) newParams.RETENTION_SCALE_DAYS = 1;
+
+          // 尤度計算
+          const newL = this.calculateLogLikelihood(newParams);
+
+          // メトロポリス判定
+          // log(acceptance_ratio) = newL - currentL
+          const logRatio = newL - currentL;
+          
+          if (logRatio > 0 || Math.log(Math.random()) < logRatio) {
+            // Accept
+            currentParams = newParams;
+            currentL = newL;
+            
+            if (currentL > bestL) {
+              bestL = currentL;
+              bestParams = { ...currentParams };
+            }
+          }
+        }
+        
+        return { bestParams, bestL, initialL: this.calculateLogLikelihood(CONFIG) };
+      }
+    }
+
 
     /* --- 5. ビュー制御 --- */
     const appEl = document.getElementById("app");
-    const importBar = document.getElementById("import");
+    const toolbarEl = document.getElementById("toolbar");
 
-    function setImportBarVisibility(visible) {
-      importBar.style.display = visible ? "block" : "none";
+    function setToolbarVisibility(visible) {
+      toolbarEl.style.display = visible ? "flex" : "none";
     }
 
     function createBackButton(onClick) {
@@ -662,7 +808,6 @@
       const cardEl = document.createElement("div");
       cardEl.className = "card";
 
-      // デバッグ情報
       const debugEl = document.createElement("div");
       debugEl.className = "card-stats-debug";
       debugEl.innerHTML = `
@@ -690,7 +835,6 @@
         answerEl.appendChild(noteEl);
       }
       
-      // ヒント（操作ガイド）
       const guideEl = document.createElement("div");
       guideEl.style.marginTop = "auto";
       guideEl.style.paddingTop = "20px";
@@ -717,10 +861,6 @@
         const threshold = 60;
         
         if (Math.abs(deltaX) > threshold && Math.abs(deltaY) < 60) {
-          // Right swipe (正解), Left swipe (不正解)
-          // 一般的なUIでは右＝Positive(正解), 左＝Negative(不正解)が多いが
-          // Tinder等は右Like, 左Nope。
-          // ここでは 直感的に 右へ送る＝完了＝正解、左へ戻す＝やり直し＝不正解 としてみる
           if (deltaX > 0) onSwipe("correct"); 
           else onSwipe("incorrect");
         }
@@ -730,7 +870,7 @@
       return cardEl;
     }
 
-    /* --- Path Browser & List View (既存機能) --- */
+    /* --- Path Browser & List View --- */
     function createPathBrowser(tree, handlers) {
       const container = document.createElement("div");
       container.className = "path-browser";
@@ -761,7 +901,6 @@
             handlers.onPlay(childCards);
           });
           
-          // Kebab Menu
           const kebabContainer = document.createElement("div");
           kebabContainer.className = "kebab-container";
           const kebabBtn = document.createElement("div");
@@ -815,8 +954,6 @@
     document.addEventListener("click", () => closeAllMenus());
 
     /* --- メインフロー --- */
-    
-    // ユーティリティ
     function buildPathTree(cards) {
       const root = {};
       for (const card of cards) {
@@ -867,10 +1004,8 @@
     }
 
     /* --- 画面遷移関数 --- */
-    
-    // A. フォルダ選択画面
     async function showPathSelection() {
-      setImportBarVisibility(true);
+      setToolbarVisibility(true);
       const cards = await loadCards();
       appEl.innerHTML = "";
 
@@ -891,9 +1026,8 @@
       appEl.appendChild(browser);
     }
 
-    // B. 問題一覧画面
     function showCardList(cards, title) {
-      setImportBarVisibility(false);
+      setToolbarVisibility(false);
       appEl.innerHTML = "";
       appEl.appendChild(createBackButton(() => showPathSelection()));
 
@@ -926,18 +1060,15 @@
       appEl.appendChild(container);
     }
 
-    // C. 学習画面 (Scheduler利用)
     async function startSmartQuiz(cards) {
       if (!cards || cards.length === 0) return;
       
-      setImportBarVisibility(false);
+      setToolbarVisibility(false);
       appEl.innerHTML = "<div style='padding:40px; text-align:center;'>学習データを準備中...</div>";
 
-      // Scheduler初期化
       const scheduler = new Scheduler();
       await scheduler.init(cards);
 
-      // 学習ループ
       function nextLoop() {
         const nextCard = scheduler.selectNextCard();
         
@@ -953,10 +1084,8 @@
         appEl.appendChild(createBackButton(() => showPathSelection()));
         
         const cardView = createCardView(nextCard, stats, {
-          onSwipe: async (outcome) => { // "correct" or "incorrect"
-            // アニメーション用に少し待ってもいいが、ここでは即時処理
+          onSwipe: async (outcome) => {
             appEl.innerHTML = "<div style='display:flex;height:100%;align-items:center;justify-content:center;font-weight:bold;color:#888;'>Saving...</div>";
-            
             await scheduler.recordResult(nextCard.id, outcome);
             nextLoop();
           }
@@ -968,6 +1097,92 @@
       nextLoop();
     }
 
+    /* --- MCMC UI Handler --- */
+    const mcmcBtn = document.getElementById("mcmcBtn");
+    const mcmcModal = document.getElementById("mcmcModal");
+    const mcmcProgress = document.getElementById("mcmcProgress");
+    const mcmcStatus = document.getElementById("mcmcStatus");
+    const mcmcResults = document.getElementById("mcmcResults");
+    const mcmcActions = document.getElementById("mcmcActions");
+    const mcmcApply = document.getElementById("mcmcApply");
+    const mcmcCancel = document.getElementById("mcmcCancel");
+
+    let proposedConfig = null;
+
+    mcmcBtn.addEventListener("click", async () => {
+      mcmcModal.classList.remove("hidden");
+      mcmcStatus.textContent = "学習データを集計中...";
+      mcmcResults.innerHTML = "";
+      mcmcActions.style.display = "none";
+      mcmcProgress.style.width = "0%";
+
+      const engine = new MCMCEngine();
+      const count = await engine.prepare();
+      
+      if (count < 10) {
+        mcmcStatus.textContent = "履歴データが少なすぎるため、実行できません (最低10件推奨)";
+        setTimeout(() => mcmcModal.classList.add("hidden"), 2000);
+        return;
+      }
+
+      mcmcStatus.textContent = "最適化実行中 (1000 iter)...";
+      
+      // MCMC実行
+      const result = await engine.run(1000, (i, total, currentL) => {
+        const pct = Math.round((i / total) * 100);
+        mcmcProgress.style.width = `${pct}%`;
+        mcmcStatus.textContent = `Iteration ${i}/${total} (LogLikelihood: ${currentL.toFixed(2)})`;
+      });
+
+      // 結果表示
+      mcmcProgress.style.width = "100%";
+      mcmcStatus.textContent = "完了しました。";
+      
+      proposedConfig = result.bestParams;
+      
+      const diffL = result.bestL - result.initialL;
+      const lClass = diffL > 0 ? "improved" : "";
+      
+      function renderRow(label, key, fixed = 2) {
+        const oldV = CONFIG[key];
+        const newV = result.bestParams[key];
+        const changed = Math.abs(oldV - newV) > 0.01 ? "changed" : "";
+        return `
+          <div class="param-row">
+            <span class="param-name">${label}</span>
+            <span class="param-val ${changed}">${oldV.toFixed(fixed)} → ${newV.toFixed(fixed)}</span>
+          </div>
+        `;
+      }
+
+      mcmcResults.innerHTML = `
+        <div style="margin-bottom:10px;">
+          対数尤度: <span class="${lClass}">${result.initialL.toFixed(2)} → ${result.bestL.toFixed(2)}</span>
+          (${diffL > 0 ? "+" : ""}${diffL.toFixed(2)})
+        </div>
+        ${renderRow("Alpha (平滑化)", "ALPHA")}
+        ${renderRow("Beta (平滑化)", "BETA")}
+        ${renderRow("記憶減衰日数", "RETENTION_SCALE_DAYS", 1)}
+      `;
+
+      mcmcActions.style.display = "flex";
+    });
+
+    mcmcCancel.addEventListener("click", () => {
+      mcmcModal.classList.add("hidden");
+    });
+
+    mcmcApply.addEventListener("click", () => {
+      if (proposedConfig) {
+        // 設定を更新して保存
+        CONFIG = { ...CONFIG, ...proposedConfig };
+        saveConfig();
+        alert("設定を更新しました。");
+        mcmcModal.classList.add("hidden");
+        // 画面リロードして反映
+        showPathSelection();
+      }
+    });
 
     /* --- イベント設定 --- */
     const tsvInput = document.getElementById("tsvInput");
