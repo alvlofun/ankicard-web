@@ -17,53 +17,81 @@
       touch-action: none;
     }
 
+    /* アイコン用フォントの代用（軽量化のため文字で表現） */
+    .icon-btn {
+      background: none;
+      border: none;
+      font-size: 1.5rem;
+      cursor: pointer;
+      padding: 0 10px;
+      color: #555;
+      user-select: none;
+    }
+
     #app {
       display: flex;
       justify-content: center;
-      align-items: flex-start; /* 画面の上の方に配置 */
+      align-items: flex-start;
       height: 100vh;
       width: 100vw;
       padding-top: 20px;
       box-sizing: border-box;
+      position: relative; /* 戻るボタンの配置基準 */
     }
 
-    /* カードのデザイン */
+    /* --- 戻るボタン --- */
+    .back-button-container {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      z-index: 100;
+    }
+    .back-btn {
+      background: rgba(255, 255, 255, 0.9);
+      border: 1px solid #ccc;
+      border-radius: 20px;
+      padding: 8px 16px;
+      font-size: 0.9rem;
+      cursor: pointer;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+      font-weight: bold;
+      color: #333;
+    }
+
+    /* --- カードのデザイン --- */
     .card {
       background: white;
       width: 85%;
       max-width: 400px;
-      /* 高さは自動だが、画面からはみ出さないように制限 */
       height: auto;
-      max-height: 80vh; 
+      max-height: 75vh; 
       min-height: 200px;
       
       padding: 32px 24px;
       border-radius: 20px;
       box-shadow: 0 10px 40px rgba(0,0,0,0.1);
       cursor: pointer;
-      touch-action: none; /* スワイプ操作のためブラウザ標準アクションを無効化 */
+      touch-action: none;
       user-select: none;
       
       display: flex;
       flex-direction: column;
-      justify-content: flex-start; /* 【修正】垂直方向：上揃え */
+      justify-content: flex-start;
       
       position: relative;
-      margin-top: 5vh; /* 画面上部からの余白 */
+      margin-top: 5vh;
       
-      overflow-y: auto; /* 【修正】長文の場合はカード内でスクロール可能に */
+      overflow-y: auto;
     }
 
     .question {
       font-size: 1.4rem;
       font-weight: bold;
       margin-bottom: 24px;
-      
-      text-align: left; /* 【修正】左揃え（改行を見やすくするため） */
+      text-align: left;
       line-height: 1.5;
-      
-      white-space: pre-wrap; /* 【重要】改行コードを反映 */
-      word-wrap: break-word; /* 長い単語を折り返す */
+      white-space: pre-wrap;
+      word-wrap: break-word;
     }
 
     .answer {
@@ -71,11 +99,9 @@
       color: #444;
       border-top: 2px solid #f0f0f0;
       padding-top: 20px;
-      
-      text-align: left; /* 【修正】左揃え */
+      text-align: left;
       line-height: 1.6;
-      
-      white-space: pre-wrap; /* 【重要】改行コードを反映 */
+      white-space: pre-wrap;
       word-wrap: break-word;
     }
 
@@ -83,24 +109,129 @@
       display: none;
     }
 
-    /* フォルダ選択画面（パスブラウザ）のスタイル */
+    /* --- フォルダ選択画面（パスブラウザ） --- */
     .path-browser {
       width: 100%;
       height: 100%;
       overflow-y: auto;
       padding: 20px;
       box-sizing: border-box;
+      padding-bottom: 80px; /* 下部の余白 */
     }
 
     .folder-row {
       background: white;
-      margin: 4px 0;
+      margin: 6px 0;
       border-bottom: 1px solid #eee;
+      border-radius: 8px;
       transition: background 0.2s;
+      
+      /* Flexboxレイアウトに変更 */
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      position: relative; /* メニューの配置基準 */
+    }
+
+    .folder-info {
+      flex-grow: 1;
+      padding: 12px;
+      cursor: pointer;
     }
 
     .folder-row:active {
       background: #f0f0f0;
+    }
+
+    /* --- ケバブメニュー --- */
+    .kebab-container {
+      position: relative;
+      height: 100%;
+      display: flex;
+      align-items: center;
+    }
+
+    .kebab-btn {
+      font-size: 1.2rem;
+      padding: 10px 15px;
+      color: #888;
+      cursor: pointer;
+      line-height: 1;
+    }
+    
+    .kebab-btn:active {
+      background-color: #eee;
+      border-radius: 50%;
+    }
+
+    .menu-popup {
+      position: absolute;
+      top: 100%;
+      right: 0;
+      background: white;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+      z-index: 2000;
+      min-width: 120px;
+      display: none; /* デフォルト非表示 */
+      overflow: hidden;
+    }
+
+    .menu-popup.show {
+      display: block;
+    }
+
+    .menu-item {
+      padding: 12px 16px;
+      font-size: 0.95rem;
+      color: #333;
+      cursor: pointer;
+      border-bottom: 1px solid #f5f5f5;
+    }
+    .menu-item:last-child {
+      border-bottom: none;
+    }
+    .menu-item:hover, .menu-item:active {
+      background-color: #f7f7f7;
+    }
+
+    /* --- 問題一覧画面 --- */
+    .card-list-view {
+      width: 100%;
+      height: 100%;
+      overflow-y: auto;
+      padding: 60px 20px 20px 20px; /* 上部は戻るボタン用に空ける */
+      box-sizing: border-box;
+      background: white;
+    }
+    
+    .list-header {
+      font-weight: bold;
+      margin-bottom: 20px;
+      font-size: 1.2rem;
+      border-bottom: 2px solid #eee;
+      padding-bottom: 10px;
+    }
+
+    .list-item {
+      border-bottom: 1px solid #eee;
+      padding: 12px 0;
+    }
+    
+    .list-q {
+      font-weight: bold;
+      margin-bottom: 4px;
+      color: #333;
+    }
+    .list-a {
+      color: #666;
+      font-size: 0.9rem;
+    }
+    .list-note {
+      color: #999;
+      font-size: 0.8rem;
+      margin-top: 2px;
     }
 
     /* --- index.html 内の style --- */
@@ -147,11 +278,11 @@
     /* --- card.js --- */
     class Card {
       constructor({ id, path, question, answer, note = "" }) {
-        this.id = id           // 内部ID
-        this.path = path       // フォルダパス
+        this.id = id           
+        this.path = path       
         this.question = question
         this.answer = answer
-        this.note = note       // 備考（Excelの3列目）
+        this.note = note       
       }
     }
 
@@ -165,16 +296,11 @@
 
         request.onupgradeneeded = (e) => {
           const db = e.target.result
-          
           if (!db.objectStoreNames.contains("cards")) {
             db.createObjectStore("cards", { keyPath: "id" })
           }
-
           if (!db.objectStoreNames.contains("reviews")) {
-            db.createObjectStore("reviews", { 
-              keyPath: "id",
-              autoIncrement: true 
-            })
+            db.createObjectStore("reviews", { keyPath: "id", autoIncrement: true })
           }
         }
 
@@ -190,7 +316,6 @@
       const db = await openDB()
       const tx = db.transaction(CARD_STORE_NAME, "readwrite")
       const store = tx.objectStore(CARD_STORE_NAME)
-
       const promises = cards.map(card => {
         return new Promise((resolve, reject) => {
           const req = store.put(card)
@@ -198,7 +323,6 @@
           req.onerror = () => reject(req.error)
         })
       })
-
       await Promise.all(promises)
     }
 
@@ -206,7 +330,6 @@
       const db = await openDB()
       const tx = db.transaction(CARD_STORE_NAME, "readonly")
       const store = tx.objectStore(CARD_STORE_NAME)
-
       return new Promise((resolve, reject) => {
         const req = store.getAll()
         req.onsuccess = () => resolve(req.result)
@@ -221,7 +344,6 @@
       const db = await openDB()
       const tx = db.transaction(REVIEW_STORE_NAME, "readwrite")
       const store = tx.objectStore(REVIEW_STORE_NAME)
-
       return new Promise((resolve, reject) => {
         const req = store.add(review)
         req.onsuccess = () => resolve(req.result)
@@ -232,40 +354,25 @@
     /* --- pathTree.js --- */
     function buildPathTree(cards) {
       const root = {}
-
       for (const card of cards) {
         const parts = card.path.split("/")
         let node = root
-
         for (const part of parts) {
-          if (!node[part]) {
-            node[part] = {}
-          }
+          if (!node[part]) node[part] = {}
           node = node[part]
         }
-
-        if (!node.__cards__) {
-          node.__cards__ = []
-        }
+        if (!node.__cards__) node.__cards__ = []
         node.__cards__.push(card)
       }
-
       return root
     }
 
     function collectCards(node) {
       let result = []
-
-      if (node.__cards__) {
-        result = result.concat(node.__cards__)
-      }
-
+      if (node.__cards__) result = result.concat(node.__cards__)
       for (const key of Object.keys(node)) {
-        if (key !== "__cards__") {
-          result = result.concat(collectCards(node[key]))
-        }
+        if (key !== "__cards__") result = result.concat(collectCards(node[key]))
       }
-
       return result
     }
 
@@ -275,17 +382,14 @@
       const workbook = XLSX.read(data)
       const firstSheetName = workbook.SheetNames[0]
       const worksheet = workbook.Sheets[firstSheetName]
-      
       const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1 })
       const dataRows = rows.length > 1 ? rows.slice(1) : []
-
       const cards = dataRows
         .filter(row => row.length > 0 && row[0])
         .map((row, index) => {
           const question = row[0] ? String(row[0]) : ""
           const answer = row[1] ? String(row[1]) : ""
           const note = row[2] ? String(row[2]) : ""
-
           return new Card({
             id: `${path}-${index}-${crypto.randomUUID()}`,
             path,
@@ -294,7 +398,6 @@
             note
           })
         })
-
       await saveCards(cards)
       return cards
     }
@@ -317,47 +420,35 @@
         noteEl.style.fontSize = "0.8rem"
         noteEl.style.color = "#888"
         noteEl.style.marginTop = "10px"
-        noteEl.style.textAlign = "left" // 備考も左寄せ
+        noteEl.style.textAlign = "left"
         noteEl.textContent = card.note
         answerEl.appendChild(noteEl)
       }
 
       cardEl.append(questionEl, answerEl)
 
-      // タップで解答表示（テキスト選択を阻害しないように判定を入れるとより良いが、簡易実装としてclickを使用）
       cardEl.addEventListener("click", (e) => {
-         // カード内のスクロール操作等で誤爆しないように、少し工夫しても良い
          answerEl.classList.toggle("hidden")
       })
 
-      // スワイプ検出
       let startX = null
-      let startY = null /* 垂直スクロールと区別するためにYも取得 */
+      let startY = null 
 
       cardEl.addEventListener("pointerdown", (e) => {
         startX = e.clientX
         startY = e.clientY
-        // setPointerCaptureするとスクロールができなくなる場合があるため、
-        // 状況によっては外すが、スワイプ判定を優先する場合はつけておく
         cardEl.setPointerCapture(e.pointerId)
       })
 
       cardEl.addEventListener("pointerup", (e) => {
         if (startX === null) return
-
         const deltaX = e.clientX - startX
         const deltaY = e.clientY - startY
         const threshold = 80
-
-        // 横方向の移動が大きく、かつ縦方向の移動が小さい場合のみスワイプとみなす
         if (Math.abs(deltaX) > threshold && Math.abs(deltaY) < 50) {
-          if (deltaX > 0) {
-            onSwipe?.("right")
-          } else {
-            onSwipe?.("left")
-          }
+          if (deltaX > 0) onSwipe?.("right")
+          else onSwipe?.("left")
         }
-
         startX = null
         startY = null
       })
@@ -365,8 +456,9 @@
       return cardEl
     }
 
-    /* --- pathBrowser.js --- */
-    function createPathBrowser(tree, onSelect) {
+    /* --- pathBrowser.js (Kebab Menu Update) --- */
+    function createPathBrowser(tree, handlers) {
+      // handlers: { onPlay, onList }
       const container = document.createElement("div")
       container.className = "path-browser"
 
@@ -378,27 +470,74 @@
 
           const row = document.createElement("div")
           row.className = "folder-row"
-          row.textContent = key
-          row.style.paddingLeft = `${(depth * 20) + 10}px`
-          row.style.paddingTop = "12px"
-          row.style.paddingBottom = "12px"
-          row.style.cursor = "pointer"
-          row.style.userSelect = "none"
+          
+          // 1. フォルダ情報（左側）
+          const infoDiv = document.createElement("div")
+          infoDiv.className = "folder-info"
+          infoDiv.textContent = key
+          infoDiv.style.paddingLeft = `${(depth * 20) + 10}px`
           
           const childCards = collectCards(node[key])
+          
           const countSpan = document.createElement("span")
           countSpan.style.float = "right"
-          countSpan.style.marginRight = "10px"
+          countSpan.style.marginRight = "5px"
           countSpan.style.color = "#999"
           countSpan.style.fontSize = "0.9em"
           countSpan.textContent = `${childCards.length}問`
-          row.appendChild(countSpan)
+          infoDiv.appendChild(countSpan)
 
-          row.addEventListener("click", () => {
+          // 行クリックでプレイ（従来通り）
+          infoDiv.addEventListener("click", () => {
             if (childCards.length === 0) return
-            onSelect(childCards)
+            handlers.onPlay(childCards)
+          })
+          
+          // 2. ケバブメニュー（右側）
+          const kebabContainer = document.createElement("div")
+          kebabContainer.className = "kebab-container"
+
+          const kebabBtn = document.createElement("div")
+          kebabBtn.className = "kebab-btn"
+          kebabBtn.textContent = "︙" // 3点リーダー
+          
+          const menuPopup = document.createElement("div")
+          menuPopup.className = "menu-popup"
+          
+          // メニュー項目1: プレイ
+          const playItem = document.createElement("div")
+          playItem.className = "menu-item"
+          playItem.textContent = "プレイ"
+          playItem.addEventListener("click", (e) => {
+            e.stopPropagation() // 親への伝播阻止
+            handlers.onPlay(childCards)
+            closeAllMenus()
+          })
+          
+          // メニュー項目2: 問題一覧
+          const listItem = document.createElement("div")
+          listItem.className = "menu-item"
+          listItem.textContent = "問題一覧"
+          listItem.addEventListener("click", (e) => {
+            e.stopPropagation()
+            handlers.onList(childCards, key) // keyはフォルダ名
+            closeAllMenus()
           })
 
+          menuPopup.append(playItem, listItem)
+          kebabContainer.append(kebabBtn, menuPopup)
+
+          // ケバブクリックでメニュー開閉
+          kebabBtn.addEventListener("click", (e) => {
+             e.stopPropagation()
+             const isOpen = menuPopup.classList.contains("show")
+             closeAllMenus() // 他を閉じる
+             if (!isOpen) {
+               menuPopup.classList.add("show")
+             }
+          })
+
+          row.append(infoDiv, kebabContainer)
           wrapper.appendChild(row)
           wrapper.appendChild(renderNode(node[key], depth + 1))
         }
@@ -412,15 +551,32 @@
       return container
     }
 
-    /* --- main.js --- */
-    document.addEventListener("touchmove", e => {
-      // #app直下以外でのスクロールを防止したいが、
-      // カード内スクロール(.card)やブラウザ(.path-browser)は許可する必要があるため
-      // e.preventDefault() を無条件に呼ぶのはやめる
-      // e.preventDefault()
-    }, { passive: false })
+    // メニューを閉じるヘルパー
+    function closeAllMenus() {
+      document.querySelectorAll(".menu-popup.show").forEach(el => el.classList.remove("show"))
+    }
+    
+    // 画面のどこかをクリックしたらメニューを閉じる
+    document.addEventListener("click", () => {
+      closeAllMenus()
+    })
 
+    /* --- main.js --- */
     const app = document.getElementById("app")
+
+    /* 戻るボタンの生成 */
+    function createBackButton(onClick) {
+      const container = document.createElement("div")
+      container.className = "back-button-container"
+      
+      const btn = document.createElement("button")
+      btn.className = "back-btn"
+      btn.textContent = "← 一覧へ戻る"
+      btn.addEventListener("click", onClick)
+      
+      container.appendChild(btn)
+      return container
+    }
 
     /* =====================
        永続化
@@ -430,44 +586,91 @@
     }
 
     /* =====================
-       描画 
+       描画: クイズ画面
     ===================== */
     function renderCard(card, onNext) {
       app.innerHTML = ""
+      
+      // 戻るボタン
+      app.appendChild(createBackButton(() => {
+        showPathSelection()
+      }))
 
       const cardView = createCardView(card, {
         onSwipe(direction) {
           const outcome = direction === "left" ? "correct" : "incorrect"
-
           saveReview({
             cardId: card.id,
             cardPath: card.path,
             outcome,
             reviewedAt: new Date().toISOString()
           })
-
           onNext()
         }
       })
-
       app.appendChild(cardView)
     }
+
+    /* =====================
+       描画: 問題一覧画面
+    ===================== */
+    function showCardList(cards, title) {
+      app.innerHTML = ""
+
+      // 戻るボタン
+      app.appendChild(createBackButton(() => {
+        showPathSelection()
+      }))
+
+      const container = document.createElement("div")
+      container.className = "card-list-view"
+      
+      const header = document.createElement("div")
+      header.className = "list-header"
+      header.textContent = `${title} (${cards.length}問)`
+      container.appendChild(header)
+
+      cards.forEach((card, i) => {
+        const item = document.createElement("div")
+        item.className = "list-item"
+        
+        const qDiv = document.createElement("div")
+        qDiv.className = "list-q"
+        qDiv.textContent = `Q${i+1}. ${card.question}`
+        
+        const aDiv = document.createElement("div")
+        aDiv.className = "list-a"
+        aDiv.textContent = `A. ${card.answer}`
+
+        item.appendChild(qDiv)
+        item.appendChild(aDiv)
+        
+        if (card.note) {
+          const nDiv = document.createElement("div")
+          nDiv.className = "list-note"
+          nDiv.textContent = `Memo: ${card.note}`
+          item.appendChild(nDiv)
+        }
+        
+        container.appendChild(item)
+      })
+
+      app.appendChild(container)
+    }
+
 
     /* =====================
        TSV/XLSX読み込み
     ===================== */
     const tsvInput = document.getElementById("tsvInput")
-
     tsvInput.addEventListener("change", async e => {
       const file = e.target.files[0]
       if (!file) return
-
       const path = prompt("この問題群のフォルダ名を入力してください（例: 英語/英単語/Part1）")
       if (!path) {
         tsvInput.value = ""
         return
       }
-
       try {
         const importedCards = await importXLSX(file, path)
         alert(`${importedCards.length} 問を読み込みました`)
@@ -497,8 +700,14 @@
 
       const tree = buildPathTree(cards)
 
-      const browser = createPathBrowser(tree, (selectedCards) => {
-        startQuiz(selectedCards)
+      // createPathBrowserにコールバックを渡す形に変更
+      const browser = createPathBrowser(tree, {
+        onPlay: (selectedCards) => {
+          startQuiz(selectedCards)
+        },
+        onList: (selectedCards, folderName) => {
+          showCardList(selectedCards, folderName)
+        }
       })
 
       app.appendChild(browser)
@@ -512,12 +721,8 @@
         alert("出題できる問題がありません")
         return
       }
-
-      // シャッフル
       const shuffled = [...cards].sort(() => Math.random() - 0.5)
-      
       let index = 0
-
       function show() {
         const card = shuffled[index]
         renderCard(card, () => {
@@ -525,7 +730,6 @@
           show()
         })
       }
-
       show()
     }
 
