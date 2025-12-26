@@ -1,7 +1,14 @@
 import { Card } from "./src/model/card.js"
 import { createCardView } from "./src/ui/cardView.js"
+import { SequentialScheduler } from "./src/scheduler/sequentialScheduler.js"
 
 const app = document.getElementById("app")
+
+const scheduler = new SequentialScheduler()
+
+let schedulerState = {
+  currentIndex: 0
+}
 
 function saveReview(result) {
   const key = "reviewResults"
@@ -9,6 +16,38 @@ function saveReview(result) {
   existing.push(result)
   localStorage.setItem(key, JSON.stringify(existing))
 }
+
+function showInitialCard() {
+  const card = cards[schedulerState.currentIndex]
+  renderCard(card)
+}
+
+function renderCard(card) {
+  app.innerHTML = ""
+
+  const cardView = createCardView(card, {
+    onSwipe(direction) {
+      const outcome =
+        direction === "left" ? "correct" : "incorrect"
+
+      saveReview({
+        cardId: card.id,
+        cardPath: card.path,
+        outcome,
+        reviewedAt: new Date().toISOString()
+      })
+
+      const result = scheduler.next(cards, schedulerState)
+      schedulerState = result.nextState
+
+      renderCard(result.card)
+    }
+  })
+
+  app.appendChild(cardView)
+}
+
+showInitialCard()
 
 const cards = [
   new Card({
