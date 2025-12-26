@@ -9,6 +9,16 @@ export function createCardView(card, { onSwipe } = {}) {
   const answerEl = document.createElement("div")
   answerEl.className = "answer hidden"
   answerEl.textContent = card.answer
+  
+  // 備考があれば追加表示
+  if (card.note) {
+    const noteEl = document.createElement("div")
+    noteEl.style.fontSize = "0.8rem"
+    noteEl.style.color = "#888"
+    noteEl.style.marginTop = "10px"
+    noteEl.textContent = card.note
+    answerEl.appendChild(noteEl)
+  }
 
   cardEl.append(questionEl, answerEl)
 
@@ -17,7 +27,7 @@ export function createCardView(card, { onSwipe } = {}) {
     answerEl.classList.toggle("hidden")
   })
 
-  // スワイプ検出
+  // スワイプ検出ロジック
   let startX = null
 
   cardEl.addEventListener("pointerdown", (e) => {
@@ -29,7 +39,7 @@ export function createCardView(card, { onSwipe } = {}) {
     if (startX === null) return
 
     const deltaX = e.clientX - startX
-    const threshold = 80
+    const threshold = 80 // スワイプと判定する距離
 
     if (deltaX > threshold) {
       onSwipe?.("right")

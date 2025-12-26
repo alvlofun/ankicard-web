@@ -2,6 +2,7 @@ export function buildPathTree(cards) {
   const root = {}
 
   for (const card of cards) {
+    // パス区切り文字 "/" で分割
     const parts = card.path.split("/")
     let node = root
 

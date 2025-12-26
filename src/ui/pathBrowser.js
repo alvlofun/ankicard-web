@@ -2,8 +2,7 @@ import { collectCards } from "../utils/pathTree.js"
 
 export function createPathBrowser(tree, onSelect) {
   const container = document.createElement("div")
-  container.style.textAlign = "left"
-  container.style.padding = "16px"
+  container.className = "path-browser"
 
   function renderNode(node, depth = 0) {
     const wrapper = document.createElement("div")
@@ -12,17 +11,28 @@ export function createPathBrowser(tree, onSelect) {
       if (key === "__cards__") continue
 
       const row = document.createElement("div")
+      row.className = "folder-row"
       row.textContent = key
-      row.style.marginLeft = `${depth * 16}px`
-      row.style.padding = "6px 4px"
+      // インデント
+      row.style.paddingLeft = `${(depth * 20) + 10}px`
+      row.style.paddingTop = "12px"
+      row.style.paddingBottom = "12px"
       row.style.cursor = "pointer"
       row.style.userSelect = "none"
-      row.style.borderRadius = "4px"
+      
+      // 子要素のカード数をカウントして表示（任意）
+      const childCards = collectCards(node[key])
+      const countSpan = document.createElement("span")
+      countSpan.style.float = "right"
+      countSpan.style.marginRight = "10px"
+      countSpan.style.color = "#999"
+      countSpan.style.fontSize = "0.9em"
+      countSpan.textContent = `${childCards.length}問`
+      row.appendChild(countSpan)
 
       row.addEventListener("click", () => {
-        const cards = collectCards(node[key])
-        if (cards.length === 0) return
-        onSelect(cards)
+        if (childCards.length === 0) return
+        onSelect(childCards)
       })
 
       wrapper.appendChild(row)
@@ -32,6 +42,8 @@ export function createPathBrowser(tree, onSelect) {
     return wrapper
   }
 
-  container.appendChild(renderNode(tree))
+  const list = renderNode(tree)
+  container.appendChild(list)
+  
   return container
 }
