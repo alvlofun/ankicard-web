@@ -6,7 +6,6 @@
   <title>暗記アプリ（試作）</title>
   
   <!-- Excel読み込み用ライブラリ (SheetJS) -->
-  <!-- 動作に必須なため追加しました -->
   <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
 
   <style>
@@ -21,10 +20,10 @@
     #app {
       display: flex;
       justify-content: center;
-      align-items: flex-start; /* 中央揃え(center)から上揃えに変更 */
+      align-items: flex-start; /* 画面の上の方に配置 */
       height: 100vh;
       width: 100vw;
-      padding-top: 20px; /* 全体に少し余白を持たせる */
+      padding-top: 20px;
       box-sizing: border-box;
     }
 
@@ -33,29 +32,38 @@
       background: white;
       width: 85%;
       max-width: 400px;
+      /* 高さは自動だが、画面からはみ出さないように制限 */
       height: auto;
+      max-height: 80vh; 
       min-height: 200px;
+      
       padding: 32px 24px;
       border-radius: 20px;
       box-shadow: 0 10px 40px rgba(0,0,0,0.1);
       cursor: pointer;
-      touch-action: none;
+      touch-action: none; /* スワイプ操作のためブラウザ標準アクションを無効化 */
       user-select: none;
+      
       display: flex;
       flex-direction: column;
-      justify-content: center;
-      position: relative;
+      justify-content: flex-start; /* 【修正】垂直方向：上揃え */
       
-      margin-top: 10vh; /* 画面上部から10%の位置に配置 */
+      position: relative;
+      margin-top: 5vh; /* 画面上部からの余白 */
+      
+      overflow-y: auto; /* 【修正】長文の場合はカード内でスクロール可能に */
     }
 
     .question {
       font-size: 1.4rem;
       font-weight: bold;
       margin-bottom: 24px;
-      text-align: center;
-      line-height: 1.4;
-      white-space: pre-wrap; /* 改行コードを反映させる */
+      
+      text-align: left; /* 【修正】左揃え（改行を見やすくするため） */
+      line-height: 1.5;
+      
+      white-space: pre-wrap; /* 【重要】改行コードを反映 */
+      word-wrap: break-word; /* 長い単語を折り返す */
     }
 
     .answer {
@@ -63,9 +71,12 @@
       color: #444;
       border-top: 2px solid #f0f0f0;
       padding-top: 20px;
-      text-align: center;
-      line-height: 1.5;
-      white-space: pre-wrap; /* 改行コードを反映させる */
+      
+      text-align: left; /* 【修正】左揃え */
+      line-height: 1.6;
+      
+      white-space: pre-wrap; /* 【重要】改行コードを反映 */
+      word-wrap: break-word;
     }
 
     .hidden {
@@ -97,30 +108,33 @@
         height: 100%;
         margin: 0;
         overscroll-behavior: none;
-        touch-action: none; /* ← 超重要 */
+        touch-action: none;
     }
 
     body {
         overflow: hidden;
     }
 
-    /* インポートボタンを画面端に配置するためのスタイル */
+    /* インポートボタン */
     #import {
         position: fixed;
         top: 10px;
         right: 10px;
         z-index: 1000;
-        background: rgba(255, 255, 255, 0.8);
-        padding: 5px;
-        border-radius: 4px;
+        background: rgba(255, 255, 255, 0.9);
+        padding: 6px 10px;
+        border-radius: 6px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+        font-size: 0.8rem;
     }
   </style>
 </head>
 <body>
 
-  <!-- headからbodyへ移動しました -->
+  <!-- ファイル選択 -->
   <div id="import">
-    <input type="file" id="tsvInput" accept=".xlsx, .txt" />
+    <span style="font-weight:bold; margin-right:5px;">Excel読込:</span>
+    <input type="file" id="tsvInput" accept=".xlsx, .xls" />
   </div>
 
   <main id="app"></main>
@@ -143,7 +157,7 @@
 
     /* --- db.js --- */
     const DB_NAME = "ankiApp"
-    const DB_VERSION = 2 // バージョンを統一
+    const DB_VERSION = 2
 
     function openDB() {
       return new Promise((resolve, reject) => {
@@ -152,12 +166,10 @@
         request.onupgradeneeded = (e) => {
           const db = e.target.result
           
-          // カード用ストアの作成
           if (!db.objectStoreNames.contains("cards")) {
             db.createObjectStore("cards", { keyPath: "id" })
           }
 
-          // 学習履歴用ストアの作成
           if (!db.objectStoreNames.contains("reviews")) {
             db.createObjectStore("reviews", { 
               keyPath: "id",
@@ -179,7 +191,6 @@
       const tx = db.transaction(CARD_STORE_NAME, "readwrite")
       const store = tx.objectStore(CARD_STORE_NAME)
 
-      // Promise.allで全件保存を待機
       const promises = cards.map(card => {
         return new Promise((resolve, reject) => {
           const req = store.put(card)
@@ -223,7 +234,6 @@
       const root = {}
 
       for (const card of cards) {
-        // パス区切り文字 "/" で分割
         const parts = card.path.split("/")
         let node = root
 
@@ -260,29 +270,18 @@
     }
 
     /* --- xlsxImporter.js --- */
-    // Note: Replaced importTSV logic with XLSX logic as per file content provided
     async function importXLSX(file, path) {
-      // ArrayBufferとしてファイルを読み込む
       const data = await file.arrayBuffer()
-      
-      // SheetJS (Global変数のXLSX) を使ってワークブックを読み込む
       const workbook = XLSX.read(data)
-      
-      // 最初のシートを取得
       const firstSheetName = workbook.SheetNames[0]
       const worksheet = workbook.Sheets[firstSheetName]
       
-      // シートを2次元配列に変換 (header: 1 は配列の配列として取得する設定)
-      // 例: [ ["問題", "答え", "備考"], ["apple", "りんご", ""], ... ]
       const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1 })
-
-      // 1行目はヘッダーとみなして除外（データが空の場合は考慮）
       const dataRows = rows.length > 1 ? rows.slice(1) : []
 
       const cards = dataRows
-        .filter(row => row.length > 0 && row[0]) // 空行や問題文がない行を除外
+        .filter(row => row.length > 0 && row[0])
         .map((row, index) => {
-          // Excelのセルデータは文字列とは限らないため、String()で変換
           const question = row[0] ? String(row[0]) : ""
           const answer = row[1] ? String(row[1]) : ""
           const note = row[2] ? String(row[2]) : ""
@@ -313,28 +312,33 @@
       answerEl.className = "answer hidden"
       answerEl.textContent = card.answer
       
-      // 備考があれば追加表示
       if (card.note) {
         const noteEl = document.createElement("div")
         noteEl.style.fontSize = "0.8rem"
         noteEl.style.color = "#888"
         noteEl.style.marginTop = "10px"
+        noteEl.style.textAlign = "left" // 備考も左寄せ
         noteEl.textContent = card.note
         answerEl.appendChild(noteEl)
       }
 
       cardEl.append(questionEl, answerEl)
 
-      // タップで解答表示
-      cardEl.addEventListener("click", () => {
-        answerEl.classList.toggle("hidden")
+      // タップで解答表示（テキスト選択を阻害しないように判定を入れるとより良いが、簡易実装としてclickを使用）
+      cardEl.addEventListener("click", (e) => {
+         // カード内のスクロール操作等で誤爆しないように、少し工夫しても良い
+         answerEl.classList.toggle("hidden")
       })
 
-      // スワイプ検出ロジック
+      // スワイプ検出
       let startX = null
+      let startY = null /* 垂直スクロールと区別するためにYも取得 */
 
       cardEl.addEventListener("pointerdown", (e) => {
         startX = e.clientX
+        startY = e.clientY
+        // setPointerCaptureするとスクロールができなくなる場合があるため、
+        // 状況によっては外すが、スワイプ判定を優先する場合はつけておく
         cardEl.setPointerCapture(e.pointerId)
       })
 
@@ -342,15 +346,20 @@
         if (startX === null) return
 
         const deltaX = e.clientX - startX
-        const threshold = 80 // スワイプと判定する距離
+        const deltaY = e.clientY - startY
+        const threshold = 80
 
-        if (deltaX > threshold) {
-          onSwipe?.("right")
-        } else if (deltaX < -threshold) {
-          onSwipe?.("left")
+        // 横方向の移動が大きく、かつ縦方向の移動が小さい場合のみスワイプとみなす
+        if (Math.abs(deltaX) > threshold && Math.abs(deltaY) < 50) {
+          if (deltaX > 0) {
+            onSwipe?.("right")
+          } else {
+            onSwipe?.("left")
+          }
         }
 
         startX = null
+        startY = null
       })
 
       return cardEl
@@ -370,14 +379,12 @@
           const row = document.createElement("div")
           row.className = "folder-row"
           row.textContent = key
-          // インデント
           row.style.paddingLeft = `${(depth * 20) + 10}px`
           row.style.paddingTop = "12px"
           row.style.paddingBottom = "12px"
           row.style.cursor = "pointer"
           row.style.userSelect = "none"
           
-          // 子要素のカード数をカウントして表示（任意）
           const childCards = collectCards(node[key])
           const countSpan = document.createElement("span")
           countSpan.style.float = "right"
@@ -407,7 +414,10 @@
 
     /* --- main.js --- */
     document.addEventListener("touchmove", e => {
-      e.preventDefault()
+      // #app直下以外でのスクロールを防止したいが、
+      // カード内スクロール(.card)やブラウザ(.path-browser)は許可する必要があるため
+      // e.preventDefault() を無条件に呼ぶのはやめる
+      // e.preventDefault()
     }, { passive: false })
 
     const app = document.getElementById("app")
@@ -427,7 +437,6 @@
 
       const cardView = createCardView(card, {
         onSwipe(direction) {
-          // 左スワイプで正解、右で不正解とする（要件に応じて変更可）
           const outcome = direction === "left" ? "correct" : "incorrect"
 
           saveReview({
@@ -447,25 +456,22 @@
     /* =====================
        TSV/XLSX読み込み
     ===================== */
-    // ID変更に対応
     const tsvInput = document.getElementById("tsvInput")
 
     tsvInput.addEventListener("change", async e => {
       const file = e.target.files[0]
       if (!file) return
 
-      const path = prompt("この問題群のパスを入力してください（例: 英語/英単語/500-550）")
+      const path = prompt("この問題群のフォルダ名を入力してください（例: 英語/英単語/Part1）")
       if (!path) {
-        tsvInput.value = "" // キャンセル時は入力をリセット
+        tsvInput.value = ""
         return
       }
 
       try {
-        // NOTE: User's code said importTSV, but provided xlsxImporter.js.
-        // Changed to importXLSX to match the definition.
         const importedCards = await importXLSX(file, path)
         alert(`${importedCards.length} 問を読み込みました`)
-        tsvInput.value = "" // 読み込み完了後にリセット
+        tsvInput.value = ""
         await showPathSelection()
       } catch (err) {
         console.error(err)
@@ -483,6 +489,8 @@
       if (cards.length === 0) {
         const msg = document.createElement("div")
         msg.textContent = "問題がありません。右上のボタンからExcelファイルをインポートしてください。"
+        msg.style.padding = "20px"
+        msg.style.textAlign = "center"
         app.appendChild(msg)
         return
       }
@@ -505,14 +513,15 @@
         return
       }
 
-      // シャッフルしたい場合はここで cards をシャッフルする
-
+      // シャッフル
+      const shuffled = [...cards].sort(() => Math.random() - 0.5)
+      
       let index = 0
 
       function show() {
-        const card = cards[index]
+        const card = shuffled[index]
         renderCard(card, () => {
-          index = (index + 1) % cards.length
+          index = (index + 1) % shuffled.length
           show()
         })
       }
