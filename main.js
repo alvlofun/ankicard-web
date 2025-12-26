@@ -4,51 +4,9 @@ import { SequentialScheduler } from "./src/scheduler/sequentialScheduler.js"
 
 const app = document.getElementById("app")
 
-const scheduler = new SequentialScheduler()
-
-let schedulerState = {
-  currentIndex: 0
-}
-
-function saveReview(result) {
-  const key = "reviewResults"
-  const existing = JSON.parse(localStorage.getItem(key) || "[]")
-  existing.push(result)
-  localStorage.setItem(key, JSON.stringify(existing))
-}
-
-function showInitialCard() {
-  const card = cards[schedulerState.currentIndex]
-  renderCard(card)
-}
-
-function renderCard(card) {
-  app.innerHTML = ""
-
-  const cardView = createCardView(card, {
-    onSwipe(direction) {
-      const outcome =
-        direction === "left" ? "correct" : "incorrect"
-
-      saveReview({
-        cardId: card.id,
-        cardPath: card.path,
-        outcome,
-        reviewedAt: new Date().toISOString()
-      })
-
-      const result = scheduler.next(cards, schedulerState)
-      schedulerState = result.nextState
-
-      renderCard(result.card)
-    }
-  })
-
-  app.appendChild(cardView)
-}
-
-showInitialCard()
-
+/* =====================
+   カード定義（最初に）
+===================== */
 const cards = [
   new Card({
     id: "c1",
@@ -70,18 +28,33 @@ const cards = [
   })
 ]
 
-let currentIndex = 0
-let currentCardView = null
+/* =====================
+   Scheduler
+===================== */
+const scheduler = new SequentialScheduler()
+let schedulerState = { currentIndex: 0 }
 
-function showCard(index) {
+/* =====================
+   永続化
+===================== */
+function saveReview(result) {
+  const key = "reviewResults"
+  const existing = JSON.parse(localStorage.getItem(key) || "[]")
+  existing.push(result)
+  localStorage.setItem(key, JSON.stringify(existing))
+}
+
+/* =====================
+   描画
+===================== */
+function renderCard(card) {
   app.innerHTML = ""
-
-  const card = cards[index]
 
   const cardView = createCardView(card, {
     onSwipe(direction) {
-      const outcome =
-        direction === "left" ? "correct" : "incorrect"
+      const outcome = direction === "left"
+        ? "correct"
+        : "incorrect"
 
       saveReview({
         cardId: card.id,
@@ -90,12 +63,17 @@ function showCard(index) {
         reviewedAt: new Date().toISOString()
       })
 
-      currentIndex = (currentIndex + 1) % cards.length
-      showCard(currentIndex)
+      const result = scheduler.next(cards, schedulerState)
+      schedulerState = result.nextState
+
+      renderCard(result.card)
     }
   })
 
   app.appendChild(cardView)
 }
 
-showCard(currentIndex)
+/* =====================
+   初期表示
+===================== */
+renderCard(cards[schedulerState.currentIndex])
