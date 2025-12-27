@@ -313,13 +313,17 @@
     .param-row {
       display: flex;
       justify-content: space-between;
+      align-items: center;
       margin: 8px 0;
       padding: 8px;
       background: #f9f9f9;
       border-radius: 4px;
+      font-size: 0.9rem;
     }
-    .param-name { font-weight: bold; }
-    .param-val { font-family: monospace; }
+    .param-name { font-weight: bold; flex: 1; }
+    .param-val { font-family: monospace; text-align: right; margin-right: 10px; }
+    .param-rhat { font-family: monospace; font-size: 0.8rem; color: #666; width: 60px; text-align: right; }
+    .rhat-bad { color: #d32f2f; font-weight: bold; }
     .changed { color: #d32f2f; font-weight: bold; }
     .improved { color: #2e7d32; font-weight: bold; }
 
@@ -396,38 +400,30 @@
     <div class="modal-content">
       <div class="modal-title">出題設定</div>
       <div style="margin-bottom:15px; font-size:0.9rem; color:#666; line-height:1.4;">
-        学習の進行に関する閾値を調整できます。<br>
+        学習モデルのパラメータ設定（MCMCで自動最適化推奨）<br>
         変更は次回の出題判定から即座に反映されます。
       </div>
       
+      <!-- 学習進行制御 -->
+      <div style="font-weight:bold; margin-top:15px; border-bottom:1px solid #eee;">学習フロー制御</div>
       <label class="config-label">
         学習中の同時進行数 (Learning Threshold)
         <input type="number" id="cfgLearningThreshold" min="1" max="100">
-        <div class="config-desc">一度に「学習中」状態にするカードの上限数です。この数を超えると新規カードは出題されにくくなります。</div>
       </label>
-
       <label class="config-label">
         推定誤答数の許容上限 (Likely Wrong Limit)
         <input type="number" id="cfgLikelyWrongLimit" min="0" max="50">
-        <div class="config-desc">「学習中」のうち「誤答しそうなカード」がこの数に達していない場合、新規カードを優先的に出題します。</div>
       </label>
-  
+
+      <!-- モデルパラメータ（簡易表示） -->
+      <div style="font-weight:bold; margin-top:15px; border-bottom:1px solid #eee;">モデルパラメータ</div>
       <label class="config-label">
-        習得済み判定確率 (Master Prob)
-        <input type="number" id="cfgMasterProb" step="0.05" min="0.1" max="0.99">
-        <div class="config-desc">推定記憶率がこの値(0.0~1.0)を超えると「習得済み」判定の候補になります。</div>
+        β0 (Base Logit)
+        <input type="number" id="cfgBeta0" step="0.1">
       </label>
-  
       <label class="config-label">
-        習得判定の必要連続正解数
-        <input type="number" id="cfgConsecutive" min="1" max="10">
-        <div class="config-desc">上記確率を超えた状態で、さらにこの回数連続して正解すると「習得済み(Mastered)」に昇格します。</div>
-      </label>
-  
-      <label class="config-label">
-        復習(降格)判定確率 (Learning Prob)
-        <input type="number" id="cfgLearningProb" step="0.05" min="0.1" max="0.99">
-        <div class="config-desc">習得済みカードの推定記憶率がこの値を下回ると、再び「学習中」に戻ります。</div>
+        τ (Retention Scale Days)
+        <input type="number" id="cfgTau" step="0.1" min="0.1">
       </label>
   
       <div class="modal-actions">
@@ -457,17 +453,23 @@
 
   <script>
     /* --- 1. 定数・パラメータ (LocalStorage対応) --- */
-    /* 記憶推定アルゴリズムのパラメータ初期値。
-       これらはユーザーの学習履歴に基づいてMCMCで最適化されるか、設定画面で変更される。
+    /* ロジスティック回帰ベースの記憶モデルパラメータ
+       logit(p) = β0 + β1*logit(p_hist) + β2*log(r(t)) + d_path
+       r(t) = (1 + t/τ)^(-γ)
+       p_hist: 重み 1/(k+λ) での加重平均正答率
     */
     const DEFAULT_CONFIG = {
-      RETENTION_SCALE_DAYS: 9,  // 忘却曲線のスケール（何日で記憶が減衰するか）
-      ALPHA: 1,                 // ベータ分布の事前分布パラメータα（成功回数の重み付けに関連）
-      BETA: 1,                  // ベータ分布の事前分布パラメータβ（失敗回数の重み付けに関連）
-      EPSILON: 0.01,            // 確率の上下限クリッピング（0や1になるのを防ぐ）
-      EXPLORATION_RATE: 0.1,    // 探索率（学習効率よりもランダム性を優先して出題する確率）
-      
+      // モデルパラメータ
+      BETA_0: 0.0,
+      BETA_1: 1.0,
+      BETA_2: 1.0,
+      TAU: 1.0,    // 日単位
+      GAMMA: 1.0,
+      LAMBDA: 1.0,
+      PATH_INTERCEPTS: {}, // pathごとのd_path { "path/to/folder": 0.0, ... }
+
       // 学習フロー制御用の閾値
+      EXPLORATION_RATE: 0.1,    // 探索率
       LEARNING_THRESHOLD: 5,           // 同時に学習中状態におけるカードの最大数
       LIKELY_WRONG_LIMIT: 5,           // 「間違えそうなカード」がこの数未満なら新規カードを投入する
       MASTER_PROB_THRESHOLD: 0.9,      // この確率を超えたら習得候補とする
@@ -481,19 +483,28 @@
       const savedConfig = localStorage.getItem("ankiAppConfig");
       if (savedConfig) {
         const parsed = JSON.parse(savedConfig);
-        // 数値型への変換と簡単なバリデーション（不正な値が入らないように）
-        if (parsed.ALPHA) parsed.ALPHA = Number(parsed.ALPHA) || 1;
-        if (parsed.BETA) parsed.BETA = Number(parsed.BETA) || 1;
-        if (parsed.RETENTION_SCALE_DAYS) parsed.RETENTION_SCALE_DAYS = Number(parsed.RETENTION_SCALE_DAYS) || 9;
         
+        // 新しいパラメータのマージ（数値変換とバリデーション）
+        if (parsed.BETA_0 !== undefined) parsed.BETA_0 = Number(parsed.BETA_0);
+        if (parsed.BETA_1 !== undefined) parsed.BETA_1 = Number(parsed.BETA_1);
+        if (parsed.BETA_2 !== undefined) parsed.BETA_2 = Number(parsed.BETA_2);
+        if (parsed.TAU) parsed.TAU = Number(parsed.TAU) || 1.0;
+        if (parsed.GAMMA) parsed.GAMMA = Number(parsed.GAMMA) || 1.0;
+        if (parsed.LAMBDA) parsed.LAMBDA = Number(parsed.LAMBDA) || 1.0;
+        // PATH_INTERCEPTS はオブジェクトなのでそのまま（型チェックは簡易的に）
+        if (parsed.PATH_INTERCEPTS && typeof parsed.PATH_INTERCEPTS === 'object') {
+             // そのまま採用
+        } else {
+             parsed.PATH_INTERCEPTS = {};
+        }
+
+        // 旧パラメータの残骸が残る可能性があるが、CONFIGオブジェクトにあっても無害
+        
+        // フロー制御パラメータ
         if (parsed.LEARNING_THRESHOLD) parsed.LEARNING_THRESHOLD = Number(parsed.LEARNING_THRESHOLD) || 5;
-        if (parsed.LIKELY_WRONG_LIMIT !== undefined) parsed.LIKELY_WRONG_LIMIT = Number(parsed.LIKELY_WRONG_LIMIT); // 0も許容
-        if (parsed.MASTER_PROB_THRESHOLD) parsed.MASTER_PROB_THRESHOLD = Number(parsed.MASTER_PROB_THRESHOLD) || 0.9;
-        if (parsed.LEARNING_PROB_THRESHOLD) parsed.LEARNING_PROB_THRESHOLD = Number(parsed.LEARNING_PROB_THRESHOLD) || 0.8;
-        if (parsed.CONSECUTIVE_SUCCESS_REQUIRED) parsed.CONSECUTIVE_SUCCESS_REQUIRED = Number(parsed.CONSECUTIVE_SUCCESS_REQUIRED) || 2;
+        if (parsed.LIKELY_WRONG_LIMIT !== undefined) parsed.LIKELY_WRONG_LIMIT = Number(parsed.LIKELY_WRONG_LIMIT);
         
         CONFIG = { ...CONFIG, ...parsed }; 
-        // LIKELY_WRONG_LIMITがundefinedの場合（旧バージョンからの移行）はデフォルト値をセット
         if (typeof CONFIG.LIKELY_WRONG_LIMIT !== 'number') CONFIG.LIKELY_WRONG_LIMIT = DEFAULT_CONFIG.LIKELY_WRONG_LIMIT;
       }
     } catch(e) { console.error("Config load failed", e); }
@@ -637,69 +648,89 @@
       store.put(stats);
     }
 
-    /* --- 4. スケジューラ & MCMC ロジック --- */
+    /* --- 4. スケジューラ & MCMC ロジック (新モデル) --- */
     
+    // ヘルパー関数: Sigmoid
+    function sigmoid(x) {
+      return 1.0 / (1.0 + Math.exp(-x));
+    }
+    // ヘルパー関数: Logit
+    function logit(p) {
+      // 0, 1付近の数値安定化
+      p = Math.max(0.0001, Math.min(0.9999, p));
+      return Math.log(p / (1.0 - p));
+    }
+
     /**
-     * 統計計算コアロジック (純粋関数化してMCMCからも使えるように設計)
-     * 履歴に基づいて現在の記憶定着率(Probability)を推定する。
-     * * @param {Array} reviews - 過去のレビュー履歴配列
-     * @param {Object} config - 計算パラメータ（ALPHA, BETA, RETENTION_SCALEなど）
-     * @param {Number} targetTime - 計算基準時刻（ミリ秒）。デフォルトは現在時刻。
-     * @returns {Number} 推定記憶率 (0.0 - 1.0)
+     * 統計計算コアロジック
+     * logit(p_it) = β0 + β1*logit(p_hist) + β2*log(r(t)) + d_path
      */
-    function calculateP(reviews, config, targetTime = Date.now()) {
+    function calculateP(reviews, config, targetTime = Date.now(), cardPath = null) {
+      // 履歴がない場合はデフォルト確率0.5
       if (!reviews || reviews.length === 0) return 0.5;
 
       const lastReview = reviews[reviews.length - 1];
       const lastReviewedAt = new Date(lastReview.reviewedAt).getTime();
+      const t_sec = (targetTime - lastReviewedAt) / 1000;
+      const t_days = t_sec / 86400.0;
 
-      // 1. 直近の成績に基づく基礎確率(mu_prime)の算出
-      // 最近の回答ほど重視するために、逆順にして重み付けを行う
+      // 1. 加重平均正答率 p_hist の計算
+      // w_k = 1 / (k + λ)
+      // 新しい順に k=1, 2, ...
       const reversed = [...reviews].reverse();
       let weightedScoreSum = 0;
       let weightedWeightSum = 0;
+      const lambda = config.LAMBDA || 1.0;
 
-      reversed.forEach((r, k) => {
-        // 重み関数: 1 / ((k + 1) + 2) -> 新しいものほど分母が小さく、重みが大きい
-        const weight = 1.0 / ((k + 1) + 2);
-        weightedScoreSum += weight * (r.outcome === "correct" ? 1 : 0);
+      reversed.forEach((r, idx) => {
+        const k = idx + 1;
+        const weight = 1.0 / (k + lambda);
+        weightedScoreSum += weight * (r.outcome === "correct" ? 1.0 : 0.0);
         weightedWeightSum += weight;
       });
 
-      // ラプラス平滑化（ベイズ推定）を適用して、データが少ない時の極端な値を防ぐ
-      const mu_prime = (weightedScoreSum + config.ALPHA) / (weightedWeightSum + config.ALPHA + config.BETA);
+      // 履歴正答率
+      const p_hist = weightedScoreSum / weightedWeightSum;
+      const logit_p_hist = logit(p_hist);
 
-      // 2. 忘却曲線による時間減衰の適用
-      // 経過秒数
-      const t_sec = (targetTime - lastReviewedAt) / 1000;
-      // 減衰スケール（秒換算）
-      const retentionScaleSec = config.RETENTION_SCALE_DAYS * 86400;
-      // 忘却モデル: 1 / (1 + t / scale) 
-      const retention = 1.0 / (1.0 + t_sec / retentionScaleSec);
+      // 2. 忘却率 r(t) の計算
+      // r(t) = (1 + t / τ)^(-γ)
+      const tau = config.TAU || 1.0;
+      const gamma = config.GAMMA || 1.0;
+      // t_daysが負になる（未来時刻）場合へのガード
+      const safe_t = Math.max(0, t_days); 
+      const r_t = Math.pow(1.0 + safe_t / tau, -gamma);
+      const log_r_t = Math.log(r_t);
 
-      let p = mu_prime * retention;
-      
-      // 確率が0または1に張り付くのを防ぐ（計算安定性のため）
-      if (p < config.EPSILON) p = config.EPSILON;
-      if (p > 1 - config.EPSILON) p = 1 - config.EPSILON;
+      // 3. Path固有パラメータ d_path
+      let d_path = 0.0;
+      if (cardPath && config.PATH_INTERCEPTS && config.PATH_INTERCEPTS[cardPath] !== undefined) {
+        d_path = config.PATH_INTERCEPTS[cardPath];
+      }
 
-      return p;
+      // 4. 線形結合
+      const beta0 = config.BETA_0 || 0.0;
+      const beta1 = config.BETA_1 || 1.0;
+      const beta2 = config.BETA_2 || 1.0;
+
+      const logit_p = beta0 + beta1 * logit_p_hist + beta2 * log_r_t + d_path;
+
+      // 5. 確率に戻す
+      return sigmoid(logit_p);
     }
 
-    // スケジューラクラス: 次に出すべきカードの選定と状態管理を行う
+    // スケジューラクラス
     class Scheduler {
       constructor() {
         this.statsMap = new Map();
         this.cardsMap = new Map();
       }
 
-      // 初期化: カードデータのロードと全統計情報の再計算
       async init(cards) {
         this.cardsMap.clear();
         this.statsMap.clear();
         cards.forEach(c => this.cardsMap.set(c.id, c));
 
-        // DBから全履歴を取得し、メモリ上で統計を再構築
         const allReviews = await loadAllReviews();
         const reviewsByCard = {};
         allReviews.forEach(r => {
@@ -709,75 +740,107 @@
 
         for (const card of cards) {
           const cardReviews = reviewsByCard[card.id] || [];
-          // 時系列順にソート
           cardReviews.sort((a, b) => new Date(a.reviewedAt) - new Date(b.reviewedAt));
           
           const stats = new CardStats(card.id);
-          this.updateStatsObject(stats, cardReviews); // 履歴に基づいて最新状態を計算
+          this.updateStatsObject(stats, cardReviews); 
           this.statsMap.set(card.id, stats);
         }
       }
 
-      // 統計オブジェクトの更新（履歴から最新の状態を計算）
-      updateStatsObject(stats, reviews) {
+    //   updateStatsObject(stats, reviews) {
+    //     if (reviews.length === 0) {
+    //       stats.state = "new";
+    //       stats.estimatedP = 0.5;
+    //       stats.lastReviewedAt = null;
+    //       stats.consecutiveHighP = 0;
+    //       return;
+    //     }
+
+    //     const card = this.cardsMap.get(stats.cardId);
+    //     const cardPath = card ? card.path : null;
+
+    //     const p = calculateP(reviews, CONFIG, Date.now(), cardPath);
+    //     stats.estimatedP = p;
+    //     stats.lastReviewedAt = new Date(reviews[reviews.length - 1].reviewedAt).getTime();
+
+    //     if (stats.state === "new") {
+    //       stats.state = "learning";
+    //       stats.consecutiveHighP = 0;
+    //     }
+
+    //     if (stats.state === "learning") {
+    //       if (p >= CONFIG.MASTER_PROB_THRESHOLD) {
+    //         stats.consecutiveHighP++;
+    //       } else {
+    //         stats.consecutiveHighP = 0;
+    //       }
+    //       if (stats.consecutiveHighP >= CONFIG.CONSECUTIVE_SUCCESS_REQUIRED) {
+    //         stats.state = "mastered";
+    //         stats.consecutiveHighP = 0;
+    //       }
+    //     } else if (stats.state === "mastered") {
+    //       if (p <= CONFIG.LEARNING_PROB_THRESHOLD) {
+    //         stats.state = "learning";
+    //         stats.consecutiveHighP = 0;
+    //       }
+    //     }
+    //   }
+
+        updateStatsObject(stats, reviews, learningCount = 0) {
+        // 1. 未学習（新規）カードの処理
         if (reviews.length === 0) {
-          stats.state = "new";
-          stats.estimatedP = 0.5;
-          stats.lastReviewedAt = null;
-          stats.consecutiveHighP = 0;
-          return;
+            stats.state = "new";
+            stats.estimatedP = 0.5;
+            stats.lastReviewedAt = null;
+            return;
         }
 
-        // 記憶率Pの計算
-        const p = calculateP(reviews, CONFIG);
+        const card = this.cardsMap.get(stats.cardId);
+        const cardPath = card ? card.path : null;
+
+        // 2. 現在の正答率 p を計算
+        const p = calculateP(reviews, CONFIG, Date.now(), cardPath);
         stats.estimatedP = p;
         stats.lastReviewedAt = new Date(reviews[reviews.length - 1].reviewedAt).getTime();
 
-        // 状態遷移ロジック（ステートマシン）
+        // --- 状態遷移ロジック ---
+
+        // 3. new は初回回答後に必ず learning へ
         if (stats.state === "new") {
-          // 一度でも回答したら学習中へ
-          stats.state = "learning";
-          stats.consecutiveHighP = 0;
+            stats.state = "learning";
         }
 
         if (stats.state === "learning") {
-          // 習得基準確率を超えているかチェック
-          if (p >= CONFIG.MASTER_PROB_THRESHOLD) {
-            stats.consecutiveHighP++;
-          } else {
-            stats.consecutiveHighP = 0;
-          }
-          // 基準確率を超えた状態が一定回数続けば「習得済み」へ昇格
-          if (stats.consecutiveHighP >= CONFIG.CONSECUTIVE_SUCCESS_REQUIRED) {
+            // 4. learning -> mastered: 推定正答率が 0.9 (閾値) 以上
+            if (p >= CONFIG.MASTER_PROB_THRESHOLD) {
             stats.state = "mastered";
-            stats.consecutiveHighP = 0;
-          }
+            }
         } else if (stats.state === "mastered") {
-          // 習得済みでも、記憶率が低下したら学習中へ戻る（忘却による復習トリガー）
-          if (p <= CONFIG.LEARNING_PROB_THRESHOLD) {
+            // 5. mastered -> learning: 正答率が 0.8 (閾値) 未満 かつ learning枠に空きがある
+            // ※ learningCount の考慮が不要な場合は、p の判定のみにする
+            const canReturnToLearning = learningCount < CONFIG.MAX_LEARNING_CARDS;
+            
+            if (p < CONFIG.LEARNING_PROB_THRESHOLD && canReturnToLearning) {
             stats.state = "learning";
-            stats.consecutiveHighP = 0;
-          }
+            }
         }
-      }
+        }
 
-      // 回答結果の記録とDB保存
       async recordResult(cardId, outcome) {
         const review = {
           cardId,
-          outcome, // "correct" or "incorrect"
+          outcome,
           reviewedAt: new Date().toISOString()
         };
         await saveReviewToDB(review);
         
-        // メモリ上の統計情報も更新
         const reviews = await loadReviewsByCardId(cardId);
         const stats = this.statsMap.get(cardId);
         this.updateStatsObject(stats, reviews);
         saveStatsToDB(stats);
       }
 
-      // 次に出題するカードを決定する戦略ロジック
       selectNextCard() {
         const statsList = Array.from(this.statsMap.values());
         if (statsList.length === 0) return null;
@@ -786,8 +849,6 @@
         const learningCards = statsList.filter(s => s.state === "learning");
         const masteredCards = statsList.filter(s => s.state === "mastered");
 
-        // 1. 探索的行動 (Exploration)
-        // 一定確率でランダムに選ぶことで、特定の問題への過学習を防ぎ、全体の記憶状況を更新する
         if (Math.random() < CONFIG.EXPLORATION_RATE) {
           const pool = [...learningCards, ...masteredCards];
           if (pool.length > 0) return this.pickRandom(pool);
@@ -795,17 +856,10 @@
           return null;
         }
 
-        // 2. 学習進行度に応じた分岐
         if (learningCards.length > CONFIG.LEARNING_THRESHOLD) {
-          // 学習中のカードが多すぎる場合 -> 新規カードは出さず、学習中の消化に専念
-          
-          // 「間違いそうなカード（確率的に誤答判定）」を抽出
           const likelyWrong = learningCards.filter(s => this.isLikelyWrong(s));
           return likelyWrong.length > 0 ? this.pickRandom(likelyWrong) : this.pickRandom(learningCards);
         } else {
-          // 学習中のカードに余裕がある場合
-          
-          // まず、Masteredの中から記憶が薄れているものをLearningに降格させる（復習）
           const degradable = masteredCards.filter(s => s.estimatedP <= CONFIG.LEARNING_PROB_THRESHOLD);
           degradable.forEach(s => {
              s.state = "learning"; 
@@ -813,15 +867,12 @@
              learningCards.push(s);
           });
 
-          // 「間違いそうなカード」を抽出
           const likelyWrong = learningCards.filter(s => this.isLikelyWrong(s));
 
-          // 変更点: likelyWrongの数が制限(LIKELY_WRONG_LIMIT)に達していなければ、newなカードを出題して学習対象を増やす
           if (likelyWrong.length < CONFIG.LIKELY_WRONG_LIMIT) {
             if (newCards.length > 0) return this.pickRandom(newCards);
           }
 
-          // 優先順位: 間違いそう -> 学習中 -> 習得済み -> 新規(フォールバック)
           if (likelyWrong.length > 0) return this.pickRandom(likelyWrong);
           if (learningCards.length > 0) return this.pickRandom(learningCards);
           if (masteredCards.length > 0) return this.pickRandom(masteredCards);
@@ -830,8 +881,6 @@
         return null;
       }
 
-      // 推定記憶率に基づいて、確率的に「間違えそう」と判定するかどうか
-      // Pが低いほどtrueになりやすい
       isLikelyWrong(stats) {
         return Math.random() > stats.estimatedP;
       }
@@ -846,124 +895,258 @@
       }
     }
 
-    /* --- MCMC Engine (マルコフ連鎖モンテカルロ法によるパラメータ推定) --- */
+    /* --- MCMC Engine (マルコフ連鎖モンテカルロ法) --- */
     class MCMCEngine {
       constructor() {
         this.reviewsByCard = {};
+        this.cardPathMap = {};
+        this.uniquePaths = new Set();
       }
 
-      // データ準備: DBから全履歴を読み込み、カードごとに整理
+      // 準備: データロードとマッピング作成
       async prepare() {
+        // カード情報のロード（Path情報のため）
+        const allCards = await loadCards();
+        this.cardPathMap = {};
+        this.uniquePaths.clear();
+        allCards.forEach(c => {
+          this.cardPathMap[c.id] = c.path;
+          this.uniquePaths.add(c.path);
+        });
+
+        // レビュー履歴のロード
         const allReviews = await loadAllReviews();
         this.reviewsByCard = {};
         allReviews.forEach(r => {
           if (!this.reviewsByCard[r.cardId]) this.reviewsByCard[r.cardId] = [];
           this.reviewsByCard[r.cardId].push(r);
         });
-        // Sort: 時系列順に並べ替え
+        
+        // ソート
         const lists = Object.values(this.reviewsByCard);
         for (let i = 0; i < lists.length; i++) {
           lists[i].sort((a, b) => new Date(a.reviewedAt) - new Date(b.reviewedAt));
-          // UIブロック回避のために少し待機
-          if (i % 50 === 0) {
-            await new Promise(r => setTimeout(r, 0));
-          }
+          if (i % 50 === 0) await new Promise(r => setTimeout(r, 0));
         }
         return allReviews.length;
       }
 
-      /**
-       * 対数尤度計算
-       * 現在のパラメータセットにおいて、実際の回答履歴が発生する確率（尤度）の対数を計算する。
-       * 尤度が高いほど、そのパラメータはユーザーの特性によく適合していると言える。
-       * * L = Σ log(P(actual_outcome | history, params))
-       */
-      calculateLogLikelihood(params) {
+      // 対数尤度 + 対数事前分布
+      calculateLogPosterior(params) {
         let logLikelihood = 0;
         
+        // 1. 対数尤度
         for (const cardId in this.reviewsByCard) {
           const reviews = this.reviewsByCard[cardId];
-          
-          // 各回答時点での予測確率を計算し、実際の結果との整合性を評価
+          const path = this.cardPathMap[cardId];
+
           for (let i = 0; i < reviews.length; i++) {
             const currentReview = reviews[i];
-            const history = reviews.slice(0, i); // 今回より前の履歴
+            const history = reviews.slice(0, i); 
             
-            // その時点での記憶率を推定（予測）
-            const predictedP = calculateP(history, params, new Date(currentReview.reviewedAt).getTime());
+            // 予測確率
+            const predictedP = calculateP(history, params, new Date(currentReview.reviewedAt).getTime(), path);
             
-            // 尤度の加算
-            // 正解したなら predictedP、不正解なら (1 - predictedP) がその事象の確率
+            // 尤度加算
             const prob = currentReview.outcome === "correct" ? predictedP : (1 - predictedP);
-            
-            // log(0)回避のためのクリッピング
             const safeProb = Math.max(1e-9, Math.min(1 - 1e-9, prob));
-            
             logLikelihood += Math.log(safeProb);
           }
         }
-        return logLikelihood;
+
+        // 2. 対数事前分布 (正規分布)
+        // log P(x) ~ -0.5 * (x - mu)^2 / sigma^2
+        // β0, β1, β2, d_path に対して N(0, 5^2) を仮定 (sigma=5, variance=25)
+        const variance = 25.0;
+        let logPrior = 0;
+
+        const priorParams = ['BETA_0', 'BETA_1', 'BETA_2'];
+        for (const key of priorParams) {
+          const val = params[key];
+          logPrior += -0.5 * (val * val) / variance;
+        }
+
+        // d_path の事前分布
+        if (params.PATH_INTERCEPTS) {
+          for (const pathKey in params.PATH_INTERCEPTS) {
+            const val = params.PATH_INTERCEPTS[pathKey];
+            logPrior += -0.5 * (val * val) / variance;
+          }
+        }
+
+        // τ, γ, λ は正の値であるべきだが、尤度計算でエラーにならなければ
+        // 強い事前分布はおかず、境界チェックのみ提案時に行う方針とする。
+
+        return logLikelihood + logPrior;
       }
 
-      // メトロポリス法によるサンプリング実行
-      async run(iterations = 1000, onProgress) {
-        // 最適化対象のパラメータ空間: Alpha, Beta, RetentionScale
-        let currentParams = { ...CONFIG };
-        let currentL = this.calculateLogLikelihood(currentParams);
-        let bestParams = { ...currentParams };
-        let bestL = currentL;
-        
-        // 提案分布の標準偏差（一度の変化量の大きさ）
+      // 複数チェーンでの実行
+      async runChains(numChains = 8, iterations = 10000, onProgress) {
+        const chains = [];
+        const burnIn = Math.floor(iterations * 0.4); // 40%をバーンインとする
+
+        // 初期化: 各チェーンで少し異なる初期値からスタート
+        for (let m = 0; m < numChains; m++) {
+          const initParams = JSON.parse(JSON.stringify(CONFIG));
+          // 少し散らす
+          initParams.BETA_0 += (Math.random() - 0.5);
+          initParams.TAU += (Math.random() - 0.5) * 0.2;
+          // Path params初期化（もし無ければ）
+          if (!initParams.PATH_INTERCEPTS) initParams.PATH_INTERCEPTS = {};
+          this.uniquePaths.forEach(p => {
+             if (initParams.PATH_INTERCEPTS[p] === undefined) {
+               initParams.PATH_INTERCEPTS[p] = 0.0;
+             }
+             // 初期値を少し散らす
+             initParams.PATH_INTERCEPTS[p] += (Math.random() - 0.5) * 0.1;
+          });
+          
+          chains.push({
+            currentParams: initParams,
+            currentL: this.calculateLogPosterior(initParams),
+            samples: [] // { BETA_0: ..., ... }
+          });
+        }
+
         const proposalSigma = {
-          ALPHA: 0.1,
-          BETA: 0.1,
-          RETENTION_SCALE_DAYS: 0.5
+          BETA_0: 0.1, BETA_1: 0.1, BETA_2: 0.1,
+          TAU: 0.2, GAMMA: 0.1, LAMBDA: 0.2,
+          PATH_INTERCEPT: 0.2
         };
 
         const batchSize = 10;
-        
-        for (let i = 0; i < iterations; i++) {
-          // UIの更新頻度制御
-          if (i % batchSize === 0) {
-            onProgress(i, iterations, currentL);
-            await new Promise(r => setTimeout(r, 0)); // UIブロック回避
-          }
+        const totalSteps = numChains * iterations;
+        let processedSteps = 0;
 
-          // 1. 提案 (Proposal): 現在のパラメータから少しずらした新しいパラメータを作成
-          const newParams = { ...currentParams };
+        for (let m = 0; m < numChains; m++) {
+          const chain = chains[m];
           
-          // いずれか一つのパラメータをランダムに変更
-          if (Math.random() < 0.33) newParams.ALPHA += (Math.random() - 0.5) * proposalSigma.ALPHA;
-          else if (Math.random() < 0.5) newParams.BETA += (Math.random() - 0.5) * proposalSigma.BETA;
-          else newParams.RETENTION_SCALE_DAYS += (Math.random() - 0.5) * proposalSigma.RETENTION_SCALE_DAYS;
+          for (let i = 0; i < iterations; i++) {
+            processedSteps++;
+            if (i % batchSize === 0) {
+              onProgress(processedSteps, totalSteps, chain.currentL);
+              await new Promise(r => setTimeout(r, 0));
+            }
 
-          // パラメータの定義域制約（負の値などを防ぐ）
-          if (newParams.ALPHA < 0.1) newParams.ALPHA = 0.1;
-          if (newParams.BETA < 0.1) newParams.BETA = 0.1;
-          if (newParams.RETENTION_SCALE_DAYS < 1) newParams.RETENTION_SCALE_DAYS = 1;
-
-          // 2. 尤度計算: 新しいパラメータでの当てはまりの良さを計算
-          const newL = this.calculateLogLikelihood(newParams);
-
-          // 3. メトロポリス判定: 新しいパラメータを採用するかどうか決定
-          // 尤度が上がれば必ず採用、下がっても確率的に採用（局所解脱出のため）
-          // log(acceptance_ratio) = newL - currentL
-          const logRatio = newL - currentL;
-          
-          if (logRatio > 0 || Math.log(Math.random()) < logRatio) {
-            // Accept
-            currentParams = newParams;
-            currentL = newL;
+            // --- Component-wise Metropolis-Hastings ---
             
-            // ベストスコアの更新
-            if (currentL > bestL) {
-              bestL = currentL;
-              bestParams = { ...currentParams };
+            // Step 1: 共通パラメータの一括更新 (ブロック更新)
+            // （または個別に更新したほうが採択率は高いが、実装簡略化のためここでは小幅に一括）
+            let newParams = JSON.parse(JSON.stringify(chain.currentParams));
+            
+            // ランダムに1~2個の共通パラメータを選んで変更する
+            const keys = ['BETA_0', 'BETA_1', 'BETA_2', 'TAU', 'GAMMA', 'LAMBDA'];
+            const targetKey = keys[Math.floor(Math.random() * keys.length)];
+            
+            newParams[targetKey] += (Math.random() - 0.5) * proposalSigma[targetKey];
+
+            // 制約チェック (正の値など)
+            if (newParams.TAU < 0.01) newParams.TAU = 0.01;
+            if (newParams.GAMMA < 0.01) newParams.GAMMA = 0.01;
+            if (newParams.LAMBDA < 0.01) newParams.LAMBDA = 0.01;
+
+            let newL = this.calculateLogPosterior(newParams);
+            if (Math.log(Math.random()) < (newL - chain.currentL)) {
+              chain.currentParams = newParams;
+              chain.currentL = newL;
+            }
+
+            // Step 2: Pathパラメータの更新 (ランダムに1つのパスを選んで更新)
+            if (this.uniquePaths.size > 0) {
+              const pathArray = Array.from(this.uniquePaths);
+              const targetPath = pathArray[Math.floor(Math.random() * pathArray.length)];
+              
+              newParams = JSON.parse(JSON.stringify(chain.currentParams));
+              newParams.PATH_INTERCEPTS[targetPath] += (Math.random() - 0.5) * proposalSigma.PATH_INTERCEPT;
+              
+              newL = this.calculateLogPosterior(newParams);
+              if (Math.log(Math.random()) < (newL - chain.currentL)) {
+                chain.currentParams = newParams;
+                chain.currentL = newL;
+              }
+            }
+
+            // サンプリング記録 (バーンイン後)
+            if (i >= burnIn) {
+              // Deep copyして保存
+              chain.samples.push(JSON.parse(JSON.stringify(chain.currentParams)));
             }
           }
         }
+
+        // 統計量 (Mean, Rhat) の計算
+        const stats = this.calculateStatistics(chains);
         
-        return { bestParams, bestL, initialL: this.calculateLogLikelihood(CONFIG) };
+        // 最適値として、全チェーンの事後平均を採用する（あるいはMAP）
+        // ここでは事後平均を採用
+        return { 
+          bestParams: stats.means, 
+          stats: stats.metrics,
+          initialL: this.calculateLogPosterior(CONFIG) 
+        };
+      }
+
+      // Gelman-Rubin Rhat 計算
+      calculateStatistics(chains) {
+        const paramKeys = ['BETA_0', 'BETA_1', 'BETA_2', 'TAU', 'GAMMA', 'LAMBDA'];
+        const M = chains.length;
+        const N = chains[0].samples.length;
+        
+        const metrics = {};
+        const means = JSON.parse(JSON.stringify(chains[0].samples[N-1])); // 雛形
+        // Pathパラメータも含むように初期化
+        if (!means.PATH_INTERCEPTS) means.PATH_INTERCEPTS = {};
+
+        // 共通パラメータの集計
+        paramKeys.forEach(key => {
+          const { mean, rhat } = this.computeRhat(chains, s => s[key]);
+          metrics[key] = { mean, rhat };
+          means[key] = mean;
+        });
+
+        // Pathパラメータの集計
+        // 全パスについて計算すると重い＆表示しきれないので、計算はするがRhat表示は省略気味にするかも
+        this.uniquePaths.forEach(path => {
+          const { mean, rhat } = this.computeRhat(chains, s => s.PATH_INTERCEPTS[path]);
+          means.PATH_INTERCEPTS[path] = mean;
+          // 全部は返さないが、デバッグ的に保持したければここで metrics に入れる
+        });
+
+        return { metrics, means };
+      }
+
+      computeRhat(chains, valueExtractor) {
+        const M = chains.length;
+        const N = chains[0].samples.length;
+
+        // 各チェーンの平均と分散
+        const chainMeans = [];
+        const chainVars = [];
+
+        chains.forEach(c => {
+          const values = c.samples.map(valueExtractor);
+          const mean = values.reduce((a,b)=>a+b, 0) / N;
+          const variance = values.reduce((a,b)=>a + Math.pow(b-mean, 2), 0) / (N-1);
+          chainMeans.push(mean);
+          chainVars.push(variance);
+        });
+
+        // 全体平均
+        const grandMean = chainMeans.reduce((a,b)=>a+b, 0) / M;
+
+        // チェーン間分散 B
+        const B = (N / (M - 1)) * chainMeans.reduce((a,b)=>a + Math.pow(b-grandMean, 2), 0);
+
+        // チェーン内分散 W
+        const W = chainVars.reduce((a,b)=>a+b, 0) / M;
+
+        // 事後分散の推定 V_hat
+        const V_hat = ((N - 1) / N) * W + (B / N); // 通常は ((N-1)/N)*W + ((M+1)/(MN))*B だが簡易版
+
+        // Rhat
+        const rhat = Math.sqrt(V_hat / W);
+        
+        return { mean: grandMean, rhat };
       }
     }
 
@@ -1319,19 +1502,20 @@
     const configSave = document.getElementById("configSave");
     const configCancel = document.getElementById("configCancel");
     
+    // フロー制御
     const cfgLearningThreshold = document.getElementById("cfgLearningThreshold");
-    const cfgLikelyWrongLimit = document.getElementById("cfgLikelyWrongLimit"); // 新規追加
-    const cfgMasterProb = document.getElementById("cfgMasterProb");
-    const cfgConsecutive = document.getElementById("cfgConsecutive");
-    const cfgLearningProb = document.getElementById("cfgLearningProb");
+    const cfgLikelyWrongLimit = document.getElementById("cfgLikelyWrongLimit");
+    // パラメータ
+    const cfgBeta0 = document.getElementById("cfgBeta0");
+    const cfgTau = document.getElementById("cfgTau");
 
     // 設定ボタンクリック時: 現在の値をフォームに反映してモーダル表示
     configBtn.addEventListener("click", () => {
       cfgLearningThreshold.value = CONFIG.LEARNING_THRESHOLD;
-      cfgLikelyWrongLimit.value = CONFIG.LIKELY_WRONG_LIMIT; 
-      cfgMasterProb.value = CONFIG.MASTER_PROB_THRESHOLD;
-      cfgConsecutive.value = CONFIG.CONSECUTIVE_SUCCESS_REQUIRED;
-      cfgLearningProb.value = CONFIG.LEARNING_PROB_THRESHOLD;
+      cfgLikelyWrongLimit.value = CONFIG.LIKELY_WRONG_LIMIT;
+      
+      cfgBeta0.value = CONFIG.BETA_0;
+      cfgTau.value = CONFIG.TAU;
       
       configModal.classList.remove("hidden");
     });
@@ -1343,16 +1527,16 @@
     // 保存ボタンクリック時: 入力値をバリデーションして保存
     configSave.addEventListener("click", () => {
       const lt = parseInt(cfgLearningThreshold.value, 10);
-      const lwl = parseInt(cfgLikelyWrongLimit.value, 10); 
-      const mp = parseFloat(cfgMasterProb.value);
-      const cs = parseInt(cfgConsecutive.value, 10);
-      const lp = parseFloat(cfgLearningProb.value);
+      const lwl = parseInt(cfgLikelyWrongLimit.value, 10);
+      
+      const b0 = parseFloat(cfgBeta0.value);
+      const tau = parseFloat(cfgTau.value);
 
       if (lt > 0) CONFIG.LEARNING_THRESHOLD = lt;
-      if (!isNaN(lwl) && lwl >= 0) CONFIG.LIKELY_WRONG_LIMIT = lwl; 
-      if (mp > 0 && mp < 1) CONFIG.MASTER_PROB_THRESHOLD = mp;
-      if (cs > 0) CONFIG.CONSECUTIVE_SUCCESS_REQUIRED = cs;
-      if (lp > 0 && lp < 1) CONFIG.LEARNING_PROB_THRESHOLD = lp;
+      if (!isNaN(lwl) && lwl >= 0) CONFIG.LIKELY_WRONG_LIMIT = lwl;
+      
+      if (!isNaN(b0)) CONFIG.BETA_0 = b0;
+      if (tau > 0) CONFIG.TAU = tau;
 
       saveConfig();
       alert("設定を保存しました。");
@@ -1397,13 +1581,13 @@
           return;
         }
 
-        mcmcStatus.textContent = "最適化実行中 (1000 iter)...";
+        mcmcStatus.textContent = "最適化実行中 (2 Chains, 500 iter)...";
         
-        // MCMC実行
-        const result = await engine.run(1000, (i, total, currentL) => {
-          const pct = Math.round((i / total) * 100);
+        // MCMC実行: 2 Chains, 500 Iterations
+        const result = await engine.runChains(8, 10000, (step, total, currentL) => {
+          const pct = Math.round((step / total) * 100);
           mcmcProgress.style.width = `${pct}%`;
-          mcmcStatus.textContent = `Iteration ${i}/${total} (LogLikelihood: ${currentL.toFixed(2)})`;
+          mcmcStatus.textContent = `Processing step ${step}/${total} (current log-posterior: ${currentL.toFixed(2)})`;
         });
 
         // 結果表示
@@ -1412,32 +1596,39 @@
         
         proposedConfig = result.bestParams;
         
-        const diffL = result.bestL - result.initialL;
-        const lClass = diffL > 0 ? "improved" : "";
-        
         // パラメータ変化の表示用ヘルパー
         function renderRow(label, key, fixed = 2) {
           const oldV = CONFIG[key];
-          const newV = result.bestParams[key];
+          const stat = result.stats[key];
+          const newV = stat.mean;
+          const rhat = stat.rhat;
+          
           const changed = Math.abs(oldV - newV) > 0.01 ? "changed" : "";
+          const rhatClass = rhat > 1.1 ? "rhat-bad" : "";
+          
           return `
             <div class="param-row">
               <span class="param-name">${label}</span>
               <span class="param-val ${changed}">${oldV.toFixed(fixed)} → ${newV.toFixed(fixed)}</span>
+              <span class="param-rhat ${rhatClass}">R̂:${rhat.toFixed(2)}</span>
             </div>
           `;
         }
 
-        mcmcResults.innerHTML = `
-          <div style="margin-bottom:10px;">
-            対数尤度: <span class="${lClass}">${result.initialL.toFixed(2)} → ${result.bestL.toFixed(2)}</span>
-            (${diffL > 0 ? "+" : ""}${diffL.toFixed(2)})
+        let html = `
+          <div style="margin-bottom:10px; font-size:0.9rem;">
+             ※ R̂ (R-hat) が1.1以下なら収束良好です。<br>
+             Path固有パラメータも内部で推定されました。
           </div>
-          ${renderRow("Alpha (平滑化)", "ALPHA")}
-          ${renderRow("Beta (平滑化)", "BETA")}
-          ${renderRow("記憶減衰日数", "RETENTION_SCALE_DAYS", 1)}
+          ${renderRow("β0 (Base)", "BETA_0")}
+          ${renderRow("β1 (Hist)", "BETA_1")}
+          ${renderRow("β2 (Time)", "BETA_2")}
+          ${renderRow("τ (Tau)", "TAU", 1)}
+          ${renderRow("γ (Gamma)", "GAMMA")}
+          ${renderRow("λ (Lambda)", "LAMBDA")}
         `;
 
+        mcmcResults.innerHTML = html;
         mcmcActions.style.display = "flex";
 
       } catch (err) {
